@@ -1,0 +1,5 @@
+- insert:
+    - id: dsh-usage-analytics
+      name: dsh-usage-analytics
+    - id: dsh-usage-analytics-invariant
+      name: 'dsh-usage-analytics/invariant'

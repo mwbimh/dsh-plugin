@@ -169,8 +169,8 @@ export function applyConversationUsageEvent(
   if (event.type !== 'assistant/message') return state
 
   const source = event.data.message.source
-  const provider = source.kind === 'model' ? source.provider : state.headerRoute?.provider
-  const model = source.kind === 'model' ? source.model : state.headerRoute?.model
+  const provider = state.headerRoute?.provider ?? source.provider
+  const model = state.headerRoute?.model ?? source.model
   if (provider === undefined || model === undefined) return state
 
   const key = callKey(event.data.turn, event.data.step)
