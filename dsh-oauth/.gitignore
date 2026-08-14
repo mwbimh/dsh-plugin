@@ -1,0 +1,6 @@
+node_modules/
+.npm-cache/
+.vendor/
+coverage/
+lib/
+*.tgz
