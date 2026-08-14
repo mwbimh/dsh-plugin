@@ -2,7 +2,7 @@
 
 `@dsh-plugins/dsh-quota` is a provider-neutral quota snapshot plugin for DeepSeek Harness. It normalizes provider-native quota windows, keeps a process-local cache, and exposes the namespaced `dsh-quota` service.
 
-This milestone includes the public model, stable redacted errors, provider registry, deterministic fake provider, TTL/stale fallback, per-account single-flight, concurrency bounds, cancellation/disposal, and provider-opted bounded retry for network and 429 failures. It includes no real provider, network client, provider-console scraper, real-account test, background polling, billing, or usage accounting.
+This contract-foundation milestone includes the public model, stable redacted errors, provider registry, deterministic fake provider, TTL/stale fallback, waiter-aware per-account single-flight, concurrency bounds, cancellation/disposal, and provider-opted bounded retry for network and 429 failures. It includes no real provider, network client, provider-console scraper, real-account test, background polling, billing, or usage accounting.
 
 ## Public contract
 
@@ -14,9 +14,23 @@ The service exposes:
 - `getSnapshot(account, signal?)`
 - `refresh(account, signal?)`
 
-Snapshots preserve all provider-native windows. A failed refresh may return the last successful snapshot with `stale: true` and a safe `lastError`; its original `observedAt` is unchanged.
+Snapshots preserve all validated provider-native windows. Provider results are normalized into detached, deeply frozen public objects before caching. A failed refresh may return the last successful snapshot with `stale: true` and a safe `lastError`; its original `observedAt` is unchanged.
 
-Optional OAuth integration uses `ctx.get('dsh-oauth')` dynamically and is not an injected dependency. Only token-free account metadata and a validated opaque credential-reference name cross the seam. Quota never resolves the reference or reads a credential value.
+Optional OAuth integration uses `ctx.get('dsh-oauth')` dynamically and is not an injected dependency. `accountCredential(accountId, { signal })` is treated as an OAuth freshness barrier and runs inside the same owned timeout/cancellation boundary as provider requests. Only token-free account metadata and a validated opaque credential-reference name cross the seam. Quota never resolves the reference or reads a credential value.
+
+`refresh()` rejects pre-aborted callers before creating a flight. Concurrent callers share one account flight; cancelling one waiter leaves surviving waiters running, while cancelling the final waiter aborts the owned OAuth/provider operation. A provider or OAuth implementation that ignores abort cannot hold disposal or mutate cache through late settlement.
+
+Provider implementations are composed programmatically through the published `createQuotaPlugin({ providers })` factory:
+
+```ts
+import { createQuotaPlugin } from '@dsh-plugins/dsh-quota'
+
+export default createQuotaPlugin({
+  providers: (_ctx, _policy) => [provider],
+})
+```
+
+Provider objects, endpoints, and credentials do not enter Loader YAML. The canonical `apply()` remains a standalone empty-provider foundation until a host deliberately loads a composed module. Account discovery is atomic and fail-fast in this milestone: a provider failure is safely classified and no partial account list is returned. Partial-provider diagnostics and availability are not claimed.
 
 ## Configuration
 

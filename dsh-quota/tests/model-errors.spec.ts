@@ -17,9 +17,16 @@ function snapshot(overrides: Partial<QuotaSnapshot> = {}): QuotaSnapshot {
 
 describe('quota public model invariants', () => {
   it('accepts millisecond timestamps, empty windows, and windows without percentage data', () => {
-    expect(validateAccount(account)).toEqual(account)
+    const providerAccount = { ...account, plan: 'Example plan', accessToken: 'account-secret' }
+    const normalizedAccount = validateAccount(providerAccount)
+    expect(normalizedAccount).toEqual({ ...account, plan: 'Example plan' })
+    expect(normalizedAccount).not.toBe(providerAccount)
+    expect(Object.isFrozen(normalizedAccount)).toBe(true)
+    expect(JSON.stringify(normalizedAccount)).not.toContain('secret')
     expect(validateSnapshot(snapshot({ windows: [] }), account)).toEqual(snapshot({ windows: [] }))
     expect(validateSnapshot(snapshot(), account).windows[0]).not.toHaveProperty('remainingPercent')
+    expect(validateSnapshot(snapshot({ windows: [{ id: 'day', used: 2, unit: 'requests' }] }), account))
+      .toMatchObject({ windows: [{ used: 2 }] })
   })
 
   it('rejects invalid identities, timestamps, values, units, and duplicate window ids', () => {
@@ -34,12 +41,14 @@ describe('quota public model invariants', () => {
     ]) expect(() => validateAccount(invalid)).toThrowError(expect.objectContaining({ code: 'provider-response' }))
 
     for (const invalid of [
+      null as unknown as QuotaSnapshot,
       snapshot({ accountId: 'other' }),
       snapshot({ provider: 'other' }),
       snapshot({ observedAt: -1 }),
       snapshot({ observedAt: 1.5 }),
       snapshot({ observedAt: Number.POSITIVE_INFINITY }),
       snapshot({ windows: [{ id: '', unit: 'requests' }] }),
+      snapshot({ windows: [{ id: 'day' } as QuotaSnapshot['windows'][number]] }),
       snapshot({ windows: [{ id: 'day', unit: 'invalid' as 'requests' }] }),
       snapshot({ windows: [{ id: 'day', used: -1, unit: 'requests' }] }),
       snapshot({ windows: [{ id: 'day', remaining: Number.NaN, unit: 'requests' }] }),
@@ -49,6 +58,7 @@ describe('quota public model invariants', () => {
       snapshot({ windows: [{ id: 'day', used: 11, limit: 10, unit: 'requests' }] }),
       snapshot({ windows: [{ id: 'day', used: 6, remaining: 5, limit: 10, unit: 'requests' }] }),
       snapshot({ windows: [{ id: 'day', unit: 'requests' }, { id: 'day', unit: 'requests' }] }),
+      snapshot({ windows: [null as unknown as QuotaSnapshot['windows'][number]] }),
       snapshot({ windows: undefined as unknown as [] }),
     ]) expect(() => validateSnapshot(invalid, account)).toThrowError(expect.objectContaining({ code: 'provider-response' }))
   })
@@ -92,6 +102,8 @@ describe('stable redacted quota errors', () => {
     expect(classifyProviderError(new DOMException('unsafe', 'AbortError'), account)).toMatchObject({ code: 'cancelled' })
     expect(classifyProviderError({ status: 429 }, account).toJSON()).not.toHaveProperty('retryAfterMs')
     expect(classifyProviderError({ status: 429, retryAfterMs: -1 }, account).toJSON()).not.toHaveProperty('retryAfterMs')
+    expect(classifyProviderError({ status: 429, retryAfterMs: Number.MAX_SAFE_INTEGER }, account))
+      .toMatchObject({ retryAfterMs: 2_147_483_647 })
     expect(new QuotaError({ code: 'internal' }).toJSON()).toEqual({
       name: 'QuotaError', message: 'dsh-quota: internal lifecycle failure', code: 'internal', retryable: false,
     })

@@ -9,7 +9,7 @@ import { FakeQuotaProvider } from '../src/fakes.ts'
 describe('dsh-quota function-plugin lifecycle', () => {
   it('keeps the Loader namespace and schema defaults intact', () => {
     expect('default' in Quota).toBe(false)
-    expect(Object.keys(Quota).sort()).toEqual(['Config', 'apply', 'inject', 'name'])
+    expect(Object.keys(Quota).sort()).toEqual(['Config', 'apply', 'createQuotaPlugin', 'inject', 'name'])
     const loader = Object.create(Loader.prototype) as Loader
     expect(loader.unwrapExports(Quota)).toBe(Quota)
     expect(Quota.name).toBe('dsh-quota')

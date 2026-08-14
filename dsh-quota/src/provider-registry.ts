@@ -44,8 +44,14 @@ export class ProviderRegistry {
       } catch (error) {
         throw classifyProviderError(error, { provider: provider.id, id: '' })
       }
-      for (const account of discovered) {
-        validateAccount(account)
+      if (!Array.isArray(discovered)) throw new QuotaError({ code: 'provider-response', provider: provider.id })
+      for (const candidate of discovered) {
+        let account: QuotaAccount
+        try {
+          account = validateAccount(candidate)
+        } catch {
+          throw new QuotaError({ code: 'provider-response', provider: provider.id })
+        }
         if (account.provider !== provider.id) {
           throw new QuotaError({ code: 'provider-response', provider: provider.id, accountId: account.id })
         }

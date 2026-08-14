@@ -11,10 +11,15 @@ export interface TokenFreeOAuthAccountCredentialRef {
   readonly credentialRef: string
 }
 
+/** Cancellation boundary shared structurally with the optional OAuth service. */
+export interface TokenFreeOAuthOperationOptions {
+  readonly signal?: AbortSignal
+}
+
 /** Optional structural service; no runtime or type dependency on dsh-oauth. */
 export interface TokenFreeOAuthAccountService {
-  accounts(provider?: string): Promise<readonly TokenFreeOAuthAccount[]>
-  accountCredential(accountId: string): Promise<TokenFreeOAuthAccountCredentialRef>
+  accounts(provider?: string, options?: TokenFreeOAuthOperationOptions): Promise<readonly TokenFreeOAuthAccount[]>
+  accountCredential(accountId: string, options?: TokenFreeOAuthOperationOptions): Promise<TokenFreeOAuthAccountCredentialRef>
 }
 
 export function isTokenFreeOAuthAccountService(value: unknown): value is TokenFreeOAuthAccountService {

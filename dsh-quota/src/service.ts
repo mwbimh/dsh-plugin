@@ -39,6 +39,13 @@ interface CacheEntry {
   readonly cachedAt: number
 }
 
+interface RefreshFlight {
+  readonly controller: AbortController
+  readonly promise: Promise<QuotaSnapshotResult>
+  waiters: number
+  settled: boolean
+}
+
 interface ConcurrencyWaiter {
   readonly signal: AbortSignal
   readonly start: () => void
@@ -53,8 +60,7 @@ function validPolicyInteger(value: number, minimum: number): boolean {
 export class QuotaServiceImpl implements QuotaService {
   private readonly registry: ProviderRegistry
   private readonly cache = new Map<string, CacheEntry>()
-  private readonly flights = new Map<string, Promise<QuotaSnapshotResult>>()
-  private readonly controllers = new Map<string, AbortController>()
+  private readonly flights = new Map<string, RefreshFlight>()
   private readonly waiters: ConcurrencyWaiter[] = []
   private readonly cacheTtlMs: number
   private readonly timeoutMs: number
@@ -123,6 +129,7 @@ export class QuotaServiceImpl implements QuotaService {
 
   async getSnapshot(account: QuotaAccountRef, signal?: AbortSignal): Promise<QuotaSnapshotResult> {
     this.assertActive()
+    if (signal?.aborted) throw cancelled(account)
     validateAccount({ id: account.id, provider: account.provider })
     const cached = this.cache.get(cacheKey(account))
     if (cached !== undefined && this.now() - cached.cachedAt < this.cacheTtlMs) {
@@ -133,27 +140,50 @@ export class QuotaServiceImpl implements QuotaService {
 
   async refresh(account: QuotaAccountRef, signal?: AbortSignal): Promise<QuotaSnapshotResult> {
     this.assertActive()
+    if (signal?.aborted) throw cancelled(account)
     validateAccount({ id: account.id, provider: account.provider })
     const key = cacheKey(account)
     let flight = this.flights.get(key)
     if (flight === undefined) {
       const controller = new AbortController()
-      this.controllers.set(key, controller)
-      flight = this.runRefresh(account, controller.signal).finally(() => {
-        this.flights.delete(key)
-        this.controllers.delete(key)
-      })
+      const promise = this.runRefresh(account, controller.signal)
+      flight = { controller, promise, waiters: 0, settled: false }
       this.flights.set(key, flight)
+      void promise.then(
+        () => this.finishFlight(key, flight!),
+        () => this.finishFlight(key, flight!),
+      )
     }
-    return await awaitCaller(flight, signal, account)
+    return await this.waitForFlight(flight, signal, account)
   }
 
   async dispose(): Promise<void> {
     if (this.disposed) return
     this.disposed = true
-    for (const controller of this.controllers.values()) controller.abort('dsh-quota disposed')
-    await Promise.allSettled(this.flights.values())
+    for (const flight of this.flights.values()) flight.controller.abort('dsh-quota disposed')
+    await Promise.allSettled([...this.flights.values()].map(flight => flight.promise))
     this.cache.clear()
+  }
+
+  private async waitForFlight(
+    flight: RefreshFlight,
+    signal: AbortSignal | undefined,
+    account: QuotaAccountRef,
+  ): Promise<QuotaSnapshotResult> {
+    flight.waiters += 1
+    try {
+      return await awaitCaller(flight.promise, signal, account)
+    } finally {
+      flight.waiters -= 1
+      if (signal?.aborted && flight.waiters === 0 && !flight.settled) {
+        flight.controller.abort('dsh-quota final waiter cancelled')
+      }
+    }
+  }
+
+  private finishFlight(key: string, flight: RefreshFlight): void {
+    flight.settled = true
+    this.flights.delete(key)
   }
 
   private assertActive(): void {
@@ -171,12 +201,16 @@ export class QuotaServiceImpl implements QuotaService {
     return candidate
   }
 
-  private async resolveCredentialRef(provider: QuotaProvider, account: QuotaAccountRef): Promise<string | undefined> {
+  private async resolveCredentialRef(
+    provider: QuotaProvider,
+    account: QuotaAccountRef,
+    signal: AbortSignal,
+  ): Promise<string | undefined> {
     if (provider.usesOAuth !== true) return undefined
     const oauth = this.requireOAuthService(provider.id)
     let result: unknown
     try {
-      result = await oauth.accountCredential(account.id)
+      result = await oauth.accountCredential(account.id, { signal })
     } catch {
       throw new QuotaError({ code: 'oauth-account-unavailable', provider: provider.id, accountId: account.id })
     }
@@ -196,12 +230,13 @@ export class QuotaServiceImpl implements QuotaService {
     const key = cacheKey(account)
     try {
       const provider = this.registry.get(account.provider)
-      const credentialRef = await this.resolveCredentialRef(provider, account)
+      const credentialRef = await this.runOwnedRequest(account, signal, requestSignal =>
+        this.resolveCredentialRef(provider, account, requestSignal))
       const snapshot = await this.withConcurrency(signal, account, () =>
         this.requestWithRetry(provider, account, credentialRef, signal))
-      validateSnapshot(snapshot, account)
-      this.cache.set(key, { snapshot, cachedAt: this.now() })
-      return { snapshot, stale: false }
+      const normalized = validateSnapshot(snapshot, account)
+      this.cache.set(key, { snapshot: normalized, cachedAt: this.now() })
+      return { snapshot: normalized, stale: false }
     } catch (error) {
       /* v8 ignore next -- all owned operation seams classify before reaching this boundary */
       const classified = error instanceof QuotaError ? error : classifyProviderError(error, account)
@@ -239,6 +274,16 @@ export class QuotaServiceImpl implements QuotaService {
     credentialRef: string | undefined,
     flightSignal: AbortSignal,
   ): Promise<QuotaSnapshot> {
+    return await this.runOwnedRequest(account, flightSignal, signal =>
+      provider.getQuota(account, signal, credentialRef))
+  }
+
+  private async runOwnedRequest<T>(
+    account: QuotaAccountRef,
+    flightSignal: AbortSignal,
+    operation: (signal: AbortSignal) => Promise<T>,
+  ): Promise<T> {
+    if (flightSignal.aborted) throw cancelled(account)
     const request = new AbortController()
     let timedOut = false
     const abort = () => request.abort(flightSignal.reason)
@@ -248,10 +293,10 @@ export class QuotaServiceImpl implements QuotaService {
       request.abort('dsh-quota timeout')
     }, this.timeoutMs)
     try {
-      return await provider.getQuota(account, request.signal, credentialRef)
+      return await awaitAbort(() => operation(request.signal), request.signal)
     } catch (error) {
       if (timedOut) throw new QuotaError({ code: 'timeout', provider: account.provider, accountId: account.id })
-      if (flightSignal.aborted) throw new QuotaError({ code: 'cancelled', provider: account.provider, accountId: account.id })
+      if (flightSignal.aborted) throw cancelled(account)
       throw classifyProviderError(error, account)
     } finally {
       clearTimeout(timeout)
@@ -269,7 +314,6 @@ export class QuotaServiceImpl implements QuotaService {
   }
 
   private async acquire(signal: AbortSignal, account: QuotaAccountRef): Promise<void> {
-    if (signal.aborted) throw new QuotaError({ code: 'cancelled', provider: account.provider, accountId: account.id })
     if (this.active < this.maxConcurrency) {
       this.active += 1
       return
@@ -300,6 +344,28 @@ export class QuotaServiceImpl implements QuotaService {
 
 function cacheKey(account: QuotaAccountRef): string {
   return `${account.provider}\u0000${account.id}`
+}
+
+function cancelled(account: QuotaAccountRef): QuotaError {
+  return new QuotaError({ code: 'cancelled', provider: account.provider, accountId: account.id })
+}
+
+async function awaitAbort<T>(operation: () => Promise<T>, signal: AbortSignal): Promise<T> {
+  const promise = operation()
+  return await new Promise<T>((resolve, reject) => {
+    const abort = () => reject(new DOMException('aborted', 'AbortError'))
+    signal.addEventListener('abort', abort, { once: true })
+    void promise.then(
+      value => {
+        signal.removeEventListener('abort', abort)
+        resolve(value)
+      },
+      error => {
+        signal.removeEventListener('abort', abort)
+        reject(error)
+      },
+    )
+  })
 }
 
 async function awaitCaller<T>(promise: Promise<T>, signal: AbortSignal | undefined, account: QuotaAccountRef): Promise<T> {

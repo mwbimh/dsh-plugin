@@ -86,23 +86,38 @@ function validQuotaValue(value: unknown): value is number {
 }
 
 /** Validate public account metadata without coercing unknown values. */
-export function validateAccount(value: QuotaAccount): QuotaAccount {
-  if (!validText(value.id) || !validText(value.provider)) invalid(value.provider, value.id)
-  if (value.displayName !== undefined && !validText(value.displayName)) invalid(value.provider, value.id)
-  if (value.plan !== undefined && !validText(value.plan)) invalid(value.provider, value.id)
-  return value
+export function validateAccount(value: unknown): QuotaAccount {
+  if (typeof value !== 'object' || value === null) invalid()
+  const account = value as Partial<QuotaAccount>
+  if (!validText(account.id) || !validText(account.provider)) invalid(account.provider, account.id)
+  if (account.displayName !== undefined && !validText(account.displayName)) invalid(account.provider, account.id)
+  if (account.plan !== undefined && !validText(account.plan)) invalid(account.provider, account.id)
+  return Object.freeze({
+    id: account.id,
+    provider: account.provider,
+    ...(account.displayName === undefined ? {} : { displayName: account.displayName }),
+    ...(account.plan === undefined ? {} : { plan: account.plan }),
+  })
 }
 
-/** Validate snapshot identity, millisecond timestamps, units, and numeric invariants. */
-export function validateSnapshot(value: QuotaSnapshot, account: QuotaAccountRef): QuotaSnapshot {
-  if (value.accountId !== account.id || value.provider !== account.provider || !validTimestamp(value.observedAt)) {
+/** Validate and normalize snapshot identity, timestamps, units, and numeric invariants. */
+export function validateSnapshot(value: unknown, account: QuotaAccountRef): QuotaSnapshot {
+  if (typeof value !== 'object' || value === null) invalid(account.provider, account.id)
+  const snapshot = value as Partial<QuotaSnapshot>
+  if (snapshot.accountId !== account.id || snapshot.provider !== account.provider || !validTimestamp(snapshot.observedAt)) {
     invalid(account.provider, account.id)
   }
-  if (!Array.isArray(value.windows)) invalid(account.provider, account.id)
-  const windows = value.windows as readonly QuotaWindow[]
+  if (!Array.isArray(snapshot.windows)) invalid(account.provider, account.id)
+  const windows = snapshot.windows as readonly unknown[]
   const ids = new Set<string>()
-  for (const window of windows) {
-    if (!validText(window.id) || ids.has(window.id) || !units.has(window.unit)) invalid(account.provider, account.id)
+  const normalizedWindows: QuotaWindow[] = []
+  for (const candidate of windows) {
+    if (typeof candidate !== 'object' || candidate === null) invalid(account.provider, account.id)
+    const window = candidate as Partial<QuotaWindow>
+    const unit = window.unit
+    if (!validText(window.id) || ids.has(window.id) || unit === undefined || !units.has(unit)) {
+      invalid(account.provider, account.id)
+    }
     ids.add(window.id)
     for (const numeric of [window.used, window.remaining, window.limit]) {
       if (numeric !== undefined && !validQuotaValue(numeric)) invalid(account.provider, account.id)
@@ -113,6 +128,19 @@ export function validateSnapshot(value: QuotaSnapshot, account: QuotaAccountRef)
       || (window.used !== undefined && window.remaining !== undefined && window.used + window.remaining > window.limit)
     )) invalid(account.provider, account.id)
     if (window.resetAt !== undefined && !validTimestamp(window.resetAt)) invalid(account.provider, account.id)
+    normalizedWindows.push(Object.freeze({
+      id: window.id,
+      ...(window.used === undefined ? {} : { used: window.used }),
+      ...(window.remaining === undefined ? {} : { remaining: window.remaining }),
+      ...(window.limit === undefined ? {} : { limit: window.limit }),
+      unit,
+      ...(window.resetAt === undefined ? {} : { resetAt: window.resetAt }),
+    }))
   }
-  return value
+  return Object.freeze({
+    accountId: account.id,
+    provider: account.provider,
+    observedAt: snapshot.observedAt,
+    windows: Object.freeze(normalizedWindows),
+  })
 }

@@ -50,6 +50,8 @@ export interface QuotaErrorJson {
   readonly retryAfterMs?: number
 }
 
+const MAX_TIMER_DELAY_MS = 2_147_483_647
+
 /** Stable error that never stores a provider cause or unknown error message. */
 export class QuotaError extends Error {
   readonly code: QuotaErrorCode
@@ -65,7 +67,7 @@ export class QuotaError extends Error {
     this.provider = safeIdentifier(options.provider)
     this.accountId = safeIdentifier(options.accountId)
     this.retryable = options.retryable ?? false
-    this.retryAfterMs = options.retryAfterMs
+    this.retryAfterMs = normalizeRetryAfter(options.retryAfterMs)
   }
 
   toJSON(): QuotaErrorJson {
@@ -95,10 +97,15 @@ function hasControlCharacter(value: string): boolean {
   return false
 }
 
+function normalizeRetryAfter(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0
+    ? Math.min(Math.trunc(value), MAX_TIMER_DELAY_MS)
+    : undefined
+}
+
 function retryAfter(error: object): number | undefined {
   if (!('retryAfterMs' in error)) return undefined
-  const value = error.retryAfterMs
-  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined
+  return normalizeRetryAfter(error.retryAfterMs)
 }
 
 /** Classify provider-facing failures while discarding all unsafe source details. */
@@ -108,12 +115,13 @@ export function classifyProviderError(error: unknown, account: QuotaAccountRef):
     return new QuotaError({ code: 'cancelled', provider: account.provider, accountId: account.id })
   }
   if (typeof error === 'object' && error !== null && 'status' in error && error.status === 429) {
+    const retryAfterMs = retryAfter(error)
     return new QuotaError({
       code: 'rate-limit',
       provider: account.provider,
       accountId: account.id,
       retryable: true,
-      ...(retryAfter(error) === undefined ? {} : { retryAfterMs: retryAfter(error)! }),
+      ...(retryAfterMs === undefined ? {} : { retryAfterMs }),
     })
   }
   if (error instanceof TypeError) {

@@ -42,6 +42,27 @@ describe('ProviderRegistry and FakeQuotaProvider', () => {
     discoveryFailure.discoverAccounts = async () => { throw new TypeError('secret') }
     await expect(new ProviderRegistry([discoveryFailure]).discoverAccounts())
       .rejects.toMatchObject({ code: 'network' })
+
+    for (const malformed of [null, { account: 'not-an-array' }, [null]]) {
+      const malformedProvider = new FakeQuotaProvider({ id: 'fake' })
+      malformedProvider.discoverAccounts = async () => malformed as never
+      await expect(new ProviderRegistry([malformedProvider]).discoverAccounts())
+        .rejects.toMatchObject({ code: 'provider-response', provider: 'fake' })
+    }
+  })
+
+  it('fails account discovery atomically with a stable provider classification', async () => {
+    const healthy = new FakeQuotaProvider({ id: 'healthy' })
+    healthy.accounts.push({ id: 'healthy-account', provider: 'healthy' })
+    const failed = new FakeQuotaProvider({ id: 'failed' })
+    failed.discoverAccounts = async () => { throw new TypeError('secret endpoint detail') }
+
+    await expect(new ProviderRegistry([healthy, failed]).discoverAccounts()).rejects.toMatchObject({
+      code: 'network',
+      provider: 'failed',
+      retryable: true,
+    })
+    expect(healthy.discoverCalls).toBe(1)
   })
 
   it('rejects invalid retry policies and overlong ids', () => {

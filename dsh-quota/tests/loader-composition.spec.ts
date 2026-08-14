@@ -8,7 +8,6 @@ import Loader from '@deepseek-ai/cordis-plugin-loader'
 import { afterEach, describe, expect, it } from 'vitest'
 import { FakeQuotaProvider } from '../src/fakes.ts'
 import * as Quota from '../src/index.ts'
-import { createQuotaPlugin } from '../src/plugin.ts'
 import type { TokenFreeOAuthAccountService } from '../src/plugin.ts'
 
 let context: Context | undefined
@@ -82,7 +81,7 @@ describe('dsh-quota real Loader composition', () => {
 
   it('reads the optional OAuth service dynamically and fails clearly after OAuth unload', async () => {
     const provider = new FakeQuotaProvider({ id: 'fake', usesOAuth: true })
-    const quotaModule = createQuotaPlugin({ providers: () => [provider] })
+    const quotaModule = Quota.createQuotaPlugin({ providers: () => [provider] })
     const ctx = await boot([
       '- id: oauth-fixture',
       "  name: 'test-token-free-oauth'",
