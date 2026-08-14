@@ -1,0 +1,4 @@
+- insert:
+    - id: dsh-quota
+      name: '@dsh-plugins/dsh-quota'
+      disabled: true
