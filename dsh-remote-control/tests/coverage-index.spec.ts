@@ -41,6 +41,7 @@ describe('plugin composition coverage', () => {
   const dispose = vi.fn(async () => {})
 
   beforeEach(() => {
+    vi.clearAllMocks()
     mocks.openState.mockReturnValue({ identity, trustStore })
     mocks.createServer.mockReturnValue({ start, dispose })
   })
@@ -102,8 +103,8 @@ describe('plugin composition coverage', () => {
     const eventData = { text: 'copy me' }
     const apiProxy = {
       sessions: {
-        list: vi.fn(async () => ({ result: { ok: true, value: { items: listItems } } })),
-        history: vi.fn(async () => ({ result: { ok: true, value: {
+        list: vi.fn(async (_request: { rpcId: string; payload: Record<string, never> }) => ({ result: { ok: true, value: { items: listItems } } })),
+        history: vi.fn(async (_request: { rpcId: string; payload: typeof request }) => ({ result: { ok: true, value: {
           events: [
             { event: { seq: 1, type: 'plain', time: 10, data: null } },
             { event: { seq: 2, type: 'optional', time: 20, data: eventData, ignorable: false } },
@@ -128,8 +129,12 @@ describe('plugin composition coverage', () => {
       hasMore: true,
     })
     expect(history.events[1]?.event.data).not.toBe(eventData)
-    expect(apiProxy.sessions.list).toHaveBeenCalledWith({ rpcId: expect.any(String), payload: {} })
-    expect(apiProxy.sessions.history).toHaveBeenCalledWith({ rpcId: expect.any(String), payload: request })
+    const [listRequest] = apiProxy.sessions.list.mock.calls[0]!
+    expect(typeof listRequest.rpcId).toBe('string')
+    expect(listRequest.payload).toEqual({})
+    const [historyRequest] = apiProxy.sessions.history.mock.calls[0]!
+    expect(typeof historyRequest.rpcId).toBe('string')
+    expect(historyRequest.payload).toEqual(request)
   })
 
   it('surfaces DSH adapter failures and checks aborted signals first', async () => {

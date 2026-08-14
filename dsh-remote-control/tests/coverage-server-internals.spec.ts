@@ -209,7 +209,7 @@ describe('mocked Node HTTP defensive branches', () => {
     }
     let observedSignal: AbortSignal | undefined
     const adapter: SessionsReadAdapter = {
-      list: vi.fn(async ({ signal }) => {
+      list: vi.fn(async ({ signal }: { signal: AbortSignal }) => {
         observedSignal = signal
         await new Promise<void>((_resolve, reject) => {
           signal.addEventListener('abort', () => reject(signal.reason), { once: true })

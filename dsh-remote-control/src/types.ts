@@ -51,11 +51,11 @@ export interface RemoteHistoryEntry {
 
 /** DSH public-service adapter used after authentication and authorization. */
 export interface SessionsReadAdapter {
-  list(options: { signal: AbortSignal }): Promise<{ items: RemoteSessionSummary[] }>
-  history(
+  list: (options: { signal: AbortSignal }) => Promise<{ items: RemoteSessionSummary[] }>
+  history: (
     request: { sessionId: string; beforeSeq?: number; maxMessages?: number },
     options: { signal: AbortSignal },
-  ): Promise<{ events: RemoteHistoryEntry[]; hasMore: boolean }>
+  ) => Promise<{ events: RemoteHistoryEntry[]; hasMore: boolean }>
 }
 
 /** A redacted security audit record. */

@@ -16,7 +16,7 @@ import {
 const disposables: Array<{ dispose(): void | Promise<void> }> = []
 
 afterEach(async () => {
-  await Promise.allSettled(disposables.splice(0).reverse().map(item => item.dispose()))
+  await Promise.allSettled(disposables.splice(0).reverse().map(item => Promise.resolve(item.dispose())))
 })
 
 describe('authentication fails closed before the DSH adapter', () => {
@@ -92,7 +92,7 @@ describe('authentication fails closed before the DSH adapter', () => {
     await expect(paired.client.list()).resolves.toEqual({ items: [SESSION_A] })
     expect(adapter.list).toHaveBeenCalledTimes(1)
 
-    expect(await server.revokeDevice(paired.identity.deviceId)).toBe(true)
+    expect(server.revokeDevice(paired.identity.deviceId)).toBe(true)
     await expect(paired.client.list()).rejects.toThrow(/revoked|unauthorized|authentication/i)
     expect(adapter.list).toHaveBeenCalledTimes(1)
   })

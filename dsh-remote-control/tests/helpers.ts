@@ -67,7 +67,7 @@ export async function startAndOpenPairing(
 ) {
   const fixture = createTestServer(options)
   await fixture.server.start()
-  const invitation = await fixture.server.openPairing()
+  const invitation = fixture.server.openPairing()
   return { ...fixture, invitation }
 }
 
@@ -107,7 +107,7 @@ export async function createRecordingProxy(targetBaseUrl: string) {
   const recorded: RecordedRequest[] = []
   const proxy = createHttpServer((incoming, outgoing) => {
     const chunks: Buffer[] = []
-    incoming.on('data', chunk => chunks.push(Buffer.from(chunk)))
+    incoming.on('data', chunk => chunks.push(Buffer.from(chunk as Uint8Array)))
     incoming.on('end', () => {
       const body = Buffer.concat(chunks)
       recorded.push({

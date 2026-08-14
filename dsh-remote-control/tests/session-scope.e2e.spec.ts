@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { generateDeviceIdentity } from '../src/index.ts'
 import {
   HISTORY_A,
@@ -10,7 +10,7 @@ import {
 const disposables: Array<{ dispose(): void | Promise<void> }> = []
 
 afterEach(async () => {
-  await Promise.allSettled(disposables.splice(0).reverse().map(item => item.dispose()))
+  await Promise.allSettled(disposables.splice(0).reverse().map(item => Promise.resolve(item.dispose())))
 })
 
 describe('two-device loopback pairing and read-only RPC', () => {
@@ -24,7 +24,7 @@ describe('two-device loopback pairing and read-only RPC', () => {
     })
     disposables.push(first.client)
 
-    const secondInvitation = await fixture.server.openPairing()
+    const secondInvitation = fixture.server.openPairing()
     const second = await pairClient({
       invitation: secondInvitation,
       identity: generateDeviceIdentity(),
@@ -45,10 +45,9 @@ describe('two-device loopback pairing and read-only RPC', () => {
 
     expect(fixture.adapter.list).toHaveBeenCalledTimes(2)
     expect(fixture.adapter.history).toHaveBeenCalledTimes(2)
-    expect(fixture.adapter.history).toHaveBeenLastCalledWith(
-      { sessionId: 'session-a', beforeSeq: 20, maxMessages: 10 },
-      { signal: expect.any(AbortSignal) },
-    )
+    const [historyRequest, historyOptions] = vi.mocked(fixture.adapter.history).mock.calls.at(-1)!
+    expect(historyRequest).toEqual({ sessionId: 'session-a', beforeSeq: 20, maxMessages: 10 })
+    expect(historyOptions.signal).toBeInstanceOf(AbortSignal)
   })
 
   it('does not allow history until that device obtained the session through list', async () => {

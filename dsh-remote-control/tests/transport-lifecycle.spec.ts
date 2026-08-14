@@ -10,7 +10,7 @@ import {
 const disposables: Array<{ dispose(): void | Promise<void> }> = []
 
 afterEach(async () => {
-  await Promise.allSettled(disposables.splice(0).reverse().map(item => item.dispose()))
+  await Promise.allSettled(disposables.splice(0).reverse().map(item => Promise.resolve(item.dispose())))
 })
 
 describe('transport resource limits', () => {
@@ -60,7 +60,7 @@ describe('abort and disposal propagation', () => {
   it('aborts the adapter when a request exceeds requestTimeoutMs', async () => {
     let observedSignal: AbortSignal | undefined
     const adapter: SessionsReadAdapter = {
-      list: vi.fn(async ({ signal }) => {
+      list: vi.fn(async ({ signal }: { signal: AbortSignal }) => {
         observedSignal = signal
         await new Promise<void>((_resolve, reject) => {
           signal.addEventListener('abort', () => reject(signal.reason), { once: true })
@@ -81,7 +81,7 @@ describe('abort and disposal propagation', () => {
   it('client.dispose aborts an in-flight RPC and propagates abort to the adapter', async () => {
     let observedSignal: AbortSignal | undefined
     const adapter: SessionsReadAdapter = {
-      list: vi.fn(async ({ signal }) => {
+      list: vi.fn(async ({ signal }: { signal: AbortSignal }) => {
         observedSignal = signal
         await new Promise<void>((_resolve, reject) => {
           signal.addEventListener('abort', () => reject(signal.reason), { once: true })
@@ -96,7 +96,7 @@ describe('abort and disposal propagation', () => {
 
     const pending = paired.client.list()
     await waitUntil(() => observedSignal !== undefined)
-    await paired.client.dispose()
+    paired.client.dispose()
 
     await expect(pending).rejects.toThrow(/abort|disposed|fetch failed/i)
     await waitUntil(() => observedSignal?.aborted === true)

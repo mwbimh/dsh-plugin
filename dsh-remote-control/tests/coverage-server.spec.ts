@@ -15,10 +15,10 @@ import { createAdapter, pairClient, SESSION_A, startAndOpenPairing, waitUntil } 
 const disposables: Array<{ dispose(): void | Promise<void> }> = []
 
 afterEach(async () => {
-  await Promise.allSettled(disposables.splice(0).reverse().map(item => item.dispose()))
+  await Promise.allSettled(disposables.splice(0).reverse().map(item => Promise.resolve(item.dispose())))
 })
 
-async function postJson(baseUrl: string, path: string, body: unknown | string): Promise<Response> {
+async function postJson(baseUrl: string, path: string, body: unknown): Promise<Response> {
   return fetch(new URL(path, baseUrl), {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -295,7 +295,7 @@ describe('history validation and adapter failure coverage', () => {
   it('aborts an active adapter request when its device is revoked', async () => {
     const observedSignals: AbortSignal[] = []
     const adapter: SessionsReadAdapter = {
-      list: vi.fn(async ({ signal }) => {
+      list: vi.fn(async ({ signal }: { signal: AbortSignal }) => {
         observedSignals.push(signal)
         await new Promise<void>((_resolve, reject) => {
           signal.addEventListener('abort', () => reject(signal.reason), { once: true })
@@ -326,7 +326,7 @@ describe('history validation and adapter failure coverage', () => {
   it('aborts active adapter work during server disposal', async () => {
     let observedSignal: AbortSignal | undefined
     const adapter: SessionsReadAdapter = {
-      list: vi.fn(async ({ signal }) => {
+      list: vi.fn(async ({ signal }: { signal: AbortSignal }) => {
         observedSignal = signal
         await new Promise<void>((_resolve, reject) => {
           signal.addEventListener('abort', () => reject(signal.reason), { once: true })

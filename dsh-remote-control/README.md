@@ -2,11 +2,13 @@
 
 Experimental, read-only remote access to a local DeepSeek Harness instance.
 
+> **Development and trusted-test networks only. This phase uses signed plain HTTP and is not a secure production LAN transport.** LAN observers can read session responses. Do not expose it through wildcard binding, port forwarding, public DNS, a public reverse proxy, or an untrusted network. Use a separately authenticated encrypted tunnel when confidentiality is required.
+
 The current package is deliberately small. It pairs a device with a pinned Ed25519 public key, authorizes only the `sessions.read` capability, exposes only session listing and history reads through a DSH public-service adapter, and records redacted allow/deny audit events. Pairing is opened on a separate loopback-only management listener. The LAN listener has no route to DSH's existing anonymous `/api`. It does not provide remote prompts, tool execution, approvals, file access, terminal access, settings changes, event streaming, discovery, relay, or Internet exposure.
 
 The Cordis patch ships disabled by default. The plugin uses named exports only; there is no default export.
 
-The first phase authenticates and signs every request but uses plain HTTP. It does not provide transport confidentiality: another machine able to capture LAN traffic can read session responses. Use only a trusted test LAN or a separately authenticated encrypted tunnel. Do not publish this listener through a router, reverse proxy, public DNS record, or wildcard interface.
+The first phase authenticates and signs every request but does not provide transport confidentiality. The warning above is a deployment restriction, not a production-hardening recommendation.
 
 ## Requirements
 

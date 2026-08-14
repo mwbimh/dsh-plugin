@@ -143,7 +143,7 @@ export function createRemoteControlServer(options: RemoteControlServerOptions): 
       currentManagement?.close()
       currentManagement?.closeAllConnections()
       for (const socket of connections) socket.destroy()
-      await Promise.allSettled([...activeSettlements])
+      await Promise.allSettled(activeSettlements)
       active.clear()
     },
     openPairing() {
@@ -403,7 +403,7 @@ async function readRaw(request: IncomingMessage, response: ServerResponse, maxBy
   const chunks: Buffer[] = []
   let bytes = 0
   for await (const chunk of request) {
-    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+    const buffer = Buffer.from(chunk as Uint8Array)
     bytes += buffer.length
     if (bytes > maxBytes) {
       writeJson(response, 413, { error: 'frame-too-large' })
