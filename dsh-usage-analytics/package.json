@@ -1,0 +1,21 @@
+{
+  "name": "dsh-usage-analytics",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Durable conversation usage projection for DeepSeek Harness",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@vitest/coverage-v8": "4.1.8",
+    "typescript": "6.0.3",
+    "vitest": "4.1.8"
+  }
+}
