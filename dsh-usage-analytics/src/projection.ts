@@ -60,5 +60,5 @@ ProjectionDefinition<'dshUsageAnalytics', ConversationUsageState> = {
     }
   },
   view: viewConversationUsage,
-  stateVersion: 1,
+  stateVersion: 2,
 }

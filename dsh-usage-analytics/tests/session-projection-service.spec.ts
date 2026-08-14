@@ -12,25 +12,30 @@ afterEach(async () => {
   context = undefined
 })
 
-function appendMeasuredTurn(session: Session): void {
-  session.append('turn/start', { turn: 1 })
-  session.append('step/start', { turn: 1, step: 1 })
+function appendMeasuredTurn(
+  session: Session,
+  turn = 1,
+  provider = 'deepseek',
+  model = 'deepseek-chat',
+): void {
+  session.append('turn/start', { turn })
+  session.append('step/start', { turn, step: 1 })
   session.append('request/header', {
-    header: { config: { provider: 'deepseek', model: 'deepseek-chat' } },
+    header: { config: { provider, model } },
     reason: 'initial',
   })
   session.append('request/context', {
-    provider: 'deepseek',
-    model: 'deepseek-chat',
+    provider,
+    model,
     contextWindow: 64_000,
   })
   session.append('assistant/message', {
-    turn: 1,
+    turn,
     step: 1,
     message: createMessage({
       role: 'assistant',
       content: [{ type: 'text', text: 'private response' }],
-      source: { kind: 'model', provider: 'deepseek', model: 'deepseek-chat' },
+      source: { kind: 'model', provider, model },
     }),
     usage: {
       inputTokens: 10,
@@ -40,8 +45,8 @@ function appendMeasuredTurn(session: Session): void {
       reasoningTokens: 3,
     },
   }, { surfaceOp: 'append', sourceEventSeqs: [] })
-  session.append('step/end', { turn: 1, step: 1 })
-  session.append('turn/end', { turn: 1, reason: { kind: 'completed' } })
+  session.append('step/end', { turn, step: 1 })
+  session.append('turn/end', { turn, reason: { kind: 'completed' } })
 }
 
 describe('session projection service registration', () => {
@@ -89,6 +94,61 @@ describe('session projection service registration', () => {
     expect(context.sessionProjections.snapshot(session).values).toHaveProperty('dshUsageAnalytics')
     await fiber.dispose()
     expect(context.sessionProjections.snapshot(session).values).not.toHaveProperty('dshUsageAnalytics')
+  })
+
+  it('restores the bounded stateVersion 2 checkpoint and replays a real fork seed', async () => {
+    context = new Context()
+    await context.plugin(SessionStore)
+    await context.plugin(SessionProjectionRegistry)
+    await context.plugin(UsageAnalyticsPlugin)
+
+    const parent = context.sessions.create(SessionId('usage-parent'))
+    appendMeasuredTurn(parent)
+    const checkpoint = context.sessionProjections.checkpoint(parent)
+    const persistedCheckpoint = JSON.parse(JSON.stringify(checkpoint)) as typeof checkpoint
+    expect(checkpoint.dshUsageAnalytics?.ver).toBe(2)
+    expect(checkpoint.dshUsageAnalytics?.val).not.toHaveProperty('calls')
+    expect(JSON.stringify(checkpoint.dshUsageAnalytics?.val).length).toBeLessThan(2_000)
+    expect(context.sessionProjections.viewCheckpoint(checkpoint).dshUsageAnalytics)
+      .toMatchObject({ measuredCalls: 1, inputTokens: 10, outputTokens: 4 })
+    expect(context.sessionProjections.viewCheckpoint({
+      dshUsageAnalytics: { ...checkpoint.dshUsageAnalytics!, ver: 1 },
+    })).not.toHaveProperty('dshUsageAnalytics')
+
+    const previousFinal = parent.events.find(event => event.type === 'assistant/message')
+    if (previousFinal?.type !== 'assistant/message') throw new Error('missing assistant final')
+    const replacement = {
+      ...structuredClone(previousFinal),
+      seq: parent.events.length,
+      time: previousFinal.time + 1,
+      data: {
+        ...structuredClone(previousFinal.data),
+        usage: { inputTokens: 20, outputTokens: 8 },
+      },
+    }
+    expect(context.sessionProjections.restore(
+      persistedCheckpoint,
+      [replacement],
+      replacement.seq,
+    ).snapshot.values.dshUsageAnalytics).toMatchObject({
+      measuredCalls: 1,
+      inputTokens: 20,
+      outputTokens: 8,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      reasoningTokens: 0,
+      reasoningUsageCalls: 0,
+    })
+
+    const child = context.sessions.fork(parent, undefined, SessionId('usage-child'))
+    expect(context.sessionProjections.snapshot(child).values.dshUsageAnalytics)
+      .toEqual(context.sessionProjections.snapshot(parent).values.dshUsageAnalytics)
+
+    appendMeasuredTurn(child, 2, 'openai', 'gpt-5')
+    expect(context.sessionProjections.snapshot(child).values.dshUsageAnalytics)
+      .toMatchObject({ measuredCalls: 2, inputTokens: 20, outputTokens: 8 })
+    expect(context.sessionProjections.snapshot(parent).values.dshUsageAnalytics)
+      .toMatchObject({ measuredCalls: 1, inputTokens: 10, outputTokens: 4 })
   })
 
   it('exports the function-plugin namespace without a default export', () => {

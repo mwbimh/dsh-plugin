@@ -3,6 +3,7 @@ import {
   applyConversationUsageEvent,
   createConversationUsageState,
   foldConversationUsage,
+  viewConversationUsage,
   type ConversationUsageEvent,
   type ProviderUsage,
 } from '../src/conversation-usage-projection.ts'
@@ -107,6 +108,26 @@ describe('durable conversation usage projection', () => {
         reasoningTokens: 0,
         reasoningUsageCalls: 0,
       },
+    ])
+  })
+
+  it('attributes a call to AssistantMessage provenance when the request header disagrees', () => {
+    const result = foldConversationUsage([
+      header('configured-provider', 'configured-model'),
+      context('actual-provider', 'actual-model', 128_000),
+      assistant(1, 1, 'actual-provider', 'actual-model', {
+        inputTokens: 12,
+        outputTokens: 5,
+      }),
+    ])
+
+    expect(result.routes).toEqual([
+      expect.objectContaining({
+        provider: 'actual-provider',
+        model: 'actual-model',
+        contextWindow: 128_000,
+        measuredCalls: 1,
+      }),
     ])
   })
 
@@ -249,31 +270,21 @@ describe('durable conversation usage projection', () => {
     )).toBe(withContext)
   })
 
-  it('uses the current request header only when a non-model assistant source lacks route fields', () => {
-    const result = foldConversationUsage([
-      header('fallback-provider', 'fallback-model'),
-      event('assistant/message', {
-        turn: 1,
-        step: 1,
-        message: { role: 'assistant', content: [], source: { kind: 'import' } },
-        usage: { inputTokens: 3, outputTokens: 2 },
-      }),
-    ])
-    expect(result.routes[0]).toMatchObject({
-      provider: 'fallback-provider',
-      model: 'fallback-model',
+  it('fails loud when a finalized assistant message has no model provenance', () => {
+    const malformed = event('assistant/message', {
+      turn: 1,
+      step: 1,
+      message: {
+        role: 'assistant',
+        content: [],
+        source: { kind: 'model', provider: '', model: '' },
+      },
+      usage: { inputTokens: 3, outputTokens: 2 },
     })
-  })
-
-  it('ignores a finalized call whose route cannot be identified', () => {
-    expect(foldConversationUsage([
-      event('assistant/message', {
-        turn: 1,
-        step: 1,
-        message: { role: 'assistant', content: [], source: { kind: 'import' } },
-        usage: { inputTokens: 3, outputTokens: 2 },
-      }),
-    ])).toMatchObject({ measuredCalls: 0, missingUsageCalls: 0, routes: [] })
+    expect(() => foldConversationUsage([
+      header('fallback-provider', 'fallback-model'),
+      malformed,
+    ])).toThrow(/model provenance/)
   })
 
   it('rejects negative, fractional, and unsafe provider token counts', () => {
@@ -319,5 +330,103 @@ describe('durable conversation usage projection', () => {
     const missing = assistant(1, 1, 'custom', 'model')
     const state = applyConversationUsageEvent(createConversationUsageState(), missing)
     expect(applyConversationUsageEvent(state, structuredClone(missing))).toBe(state)
+  })
+
+  it('keeps only route totals and one bounded replacement slot for a long session', () => {
+    let state = applyConversationUsageEvent(
+      createConversationUsageState(),
+      header('deepseek', 'deepseek-chat'),
+    )
+    for (let turn = 1; turn <= 10_000; turn += 1) {
+      state = applyConversationUsageEvent(
+        state,
+        assistant(turn, 1, 'deepseek', 'deepseek-chat', {
+          inputTokens: 2,
+          outputTokens: 1,
+        }),
+      )
+    }
+
+    expect(state).not.toHaveProperty('calls')
+    expect(JSON.stringify(state).length).toBeLessThan(1_500)
+    expect(viewConversationUsage(state)).toMatchObject({
+      measuredCalls: 10_000,
+      inputTokens: 20_000,
+      outputTokens: 10_000,
+    })
+  })
+
+  it('does not retain zeroed routes while the bounded replacement slot changes provenance', () => {
+    let state = createConversationUsageState()
+    for (let replacement = 1; replacement <= 1_000; replacement += 1) {
+      state = applyConversationUsageEvent(
+        state,
+        assistant(1, 1, `provider-${replacement}`, `model-${replacement}`, {
+          inputTokens: replacement,
+          outputTokens: 1,
+        }),
+      )
+    }
+
+    expect(JSON.stringify(state).length).toBeLessThan(2_000)
+    expect(viewConversationUsage(state).routes).toEqual([
+      expect.objectContaining({ provider: 'provider-1000', model: 'model-1000' }),
+    ])
+  })
+
+  it('does not retain context-only routes after their capacity is cleared', () => {
+    let state = createConversationUsageState()
+    for (let route = 1; route <= 10_000; route += 1) {
+      state = applyConversationUsageEvent(state, context(`provider-${route}`, 'model', 64_000))
+      state = applyConversationUsageEvent(state, context(`provider-${route}`, 'model'))
+    }
+
+    expect(JSON.stringify(state).length).toBeLessThan(500)
+    expect(viewConversationUsage(state).routes).toEqual([])
+  })
+
+  it('fails before aggregate token totals exceed the safe-integer contract', () => {
+    expect(() => foldConversationUsage([
+      assistant(1, 1, 'provider', 'model', {
+        inputTokens: Number.MAX_SAFE_INTEGER,
+        outputTokens: 0,
+      }),
+      assistant(2, 1, 'provider', 'model', {
+        inputTokens: 1,
+        outputTokens: 0,
+      }),
+    ])).toThrow(/aggregate inputTokens must be a non-negative safe integer/)
+  })
+
+  it('continues from a bounded checkpoint prefix without copying its historical samples', () => {
+    let parent = applyConversationUsageEvent(
+      createConversationUsageState(),
+      header('deepseek', 'deepseek-chat'),
+    )
+    for (let turn = 1; turn <= 1_000; turn += 1) {
+      parent = applyConversationUsageEvent(
+        parent,
+        assistant(turn, 1, 'deepseek', 'deepseek-chat', {
+          inputTokens: 1,
+          outputTokens: 1,
+        }),
+      )
+    }
+
+    let child = structuredClone(parent)
+    child = applyConversationUsageEvent(
+      child,
+      assistant(1_001, 1, 'openai', 'gpt-5', {
+        inputTokens: 8,
+        outputTokens: 3,
+      }),
+    )
+
+    expect(JSON.stringify(child).length).toBeLessThan(2_000)
+    expect(viewConversationUsage(child)).toMatchObject({
+      measuredCalls: 1_001,
+      inputTokens: 1_008,
+      outputTokens: 1_003,
+    })
   })
 })

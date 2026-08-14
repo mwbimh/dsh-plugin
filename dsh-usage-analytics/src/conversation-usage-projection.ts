@@ -46,7 +46,7 @@ interface AssistantMessageData {
   message: {
     role: 'assistant'
     content: readonly unknown[]
-    source: { kind: string; provider?: string; model?: string }
+    source: { kind: 'model'; provider: string; model: string }
   }
   usage?: ProviderUsage
 }
@@ -91,29 +91,28 @@ export interface ConversationUsageProjection extends UsageTotals {
   routes: RouteUsage[]
 }
 
-interface RouteContext {
-  provider: string
-  model: string
-  contextWindow?: number
-}
-
 interface CallSample {
   provider: string
   model: string
   usage?: ProviderUsage
 }
 
+interface ReplacementSlot {
+  turn: number
+  step: number
+  sample: CallSample
+}
+
 /** Plain-JSON internal state suitable for a session-projection checkpoint. */
 export interface ConversationUsageState {
-  headerRoute?: { provider: string; model: string }
-  contexts: Record<string, RouteContext>
-  calls: Record<string, CallSample>
+  totals: UsageTotals
+  routes: Record<string, RouteUsage>
+  /** The only sample retained so an immediately repeated final can replace it. */
+  lastCall?: ReplacementSlot
 }
 
 const routeKey = (provider: string, model: string): string =>
   `${provider.length}:${provider}${model}`
-
-const callKey = (turn: number, step: number): string => `${turn}:${step}`
 
 const zeroTotals = (): UsageTotals => ({
   measuredCalls: 0,
@@ -128,7 +127,7 @@ const zeroTotals = (): UsageTotals => ({
 
 /** Create the empty pure-fold state. */
 export function createConversationUsageState(): ConversationUsageState {
-  return { contexts: {}, calls: {} }
+  return { totals: zeroTotals(), routes: {} }
 }
 
 /**
@@ -142,74 +141,65 @@ export function applyConversationUsageEvent(
   state: ConversationUsageState,
   event: ConversationUsageEvent,
 ): ConversationUsageState {
-  if (event.type === 'request/header') {
-    const { provider, model } = event.data.header.config
-    if (state.headerRoute?.provider === provider && state.headerRoute.model === model) return state
-    return { ...state, headerRoute: { provider, model } }
-  }
+  if (event.type === 'request/header') return state
 
   if (event.type === 'request/context') {
     const { provider, model, contextWindow } = event.data
     const key = routeKey(provider, model)
-    const previous = state.contexts[key]
+    const previous = state.routes[key]
     if (previous?.contextWindow === contextWindow) return state
+    const { contextWindow: _previousContextWindow, ...previousWithoutContext } = previous ?? {
+      provider,
+      model,
+      ...zeroTotals(),
+    }
+    const nextRoute: RouteUsage = {
+      ...previousWithoutContext,
+      ...(contextWindow === undefined ? {} : { contextWindow }),
+    }
+    const routes = { ...state.routes }
+    if (routeIsEmpty(nextRoute)) {
+      delete routes[key]
+    } else {
+      routes[key] = nextRoute
+    }
     return {
       ...state,
-      contexts: {
-        ...state.contexts,
-        [key]: {
-          provider,
-          model,
-          ...(contextWindow === undefined ? {} : { contextWindow }),
-        },
-      },
+      routes,
     }
   }
 
   if (event.type !== 'assistant/message') return state
 
   const source = event.data.message.source
-  const provider = state.headerRoute?.provider ?? source.provider
-  const model = state.headerRoute?.model ?? source.model
-  if (provider === undefined || model === undefined) return state
+  if (source.kind !== 'model' || source.provider.length === 0 || source.model.length === 0) {
+    throw new Error(`assistant/message at seq ${event.seq} lacks model provenance`)
+  }
 
-  const key = callKey(event.data.turn, event.data.step)
   const sample: CallSample = {
-    provider,
-    model,
+    provider: source.provider,
+    model: source.model,
     ...(event.data.usage === undefined ? {} : { usage: normalizedUsage(event.data.usage) }),
   }
-  const previous = state.calls[key]
-  if (previous !== undefined && samplesEqual(previous, sample)) return state
-  return { ...state, calls: { ...state.calls, [key]: sample } }
+  const lastCall = state.lastCall
+  if (lastCall !== undefined) {
+    if (event.data.turn === lastCall.turn && event.data.step === lastCall.step) {
+      if (samplesEqual(lastCall.sample, sample)) return state
+      return replaceSample(state, event.data.turn, event.data.step, lastCall.sample, sample)
+    }
+  }
+  return appendSample(state, event.data.turn, event.data.step, sample)
 }
 
 /** Build the privacy-minimized public value from fold state. */
 export function viewConversationUsage(state: ConversationUsageState): ConversationUsageProjection {
-  const totals = zeroTotals()
-  const routes = new Map<string, RouteUsage>()
-
-  for (const sample of Object.values(state.calls)) {
-    const key = routeKey(sample.provider, sample.model)
-    let route = routes.get(key)
-    if (route === undefined) {
-      const context = state.contexts[key]
-      route = {
-        provider: sample.provider,
-        model: sample.model,
-        ...(context?.contextWindow === undefined ? {} : { contextWindow: context.contextWindow }),
-        ...zeroTotals(),
-      }
-      routes.set(key, route)
-    }
-    addSample(totals, sample)
-    addSample(route, sample)
-  }
-
   return {
-    ...totals,
-    routes: [...routes.values()].sort((left, right) =>
-      left.provider.localeCompare(right.provider) || left.model.localeCompare(right.model)),
+    ...state.totals,
+    routes: Object.values(state.routes)
+      .filter(route => route.measuredCalls + route.missingUsageCalls > 0)
+      .map(route => ({ ...route }))
+      .sort((left, right) =>
+        left.provider.localeCompare(right.provider) || left.model.localeCompare(right.model)),
   }
 }
 
@@ -254,19 +244,105 @@ function samplesEqual(left: CallSample, right: CallSample): boolean {
     && left.usage.reasoningTokens === right.usage.reasoningTokens
 }
 
-function addSample(target: UsageTotals, sample: CallSample): void {
+function appendSample(
+  state: ConversationUsageState,
+  turn: number,
+  step: number,
+  sample: CallSample,
+): ConversationUsageState {
+  return {
+    ...state,
+    totals: adjustedTotals(state.totals, sample, 1),
+    routes: adjustedRoutes(state.routes, sample, 1),
+    lastCall: { turn, step, sample },
+  }
+}
+
+function replaceSample(
+  state: ConversationUsageState,
+  turn: number,
+  step: number,
+  previous: CallSample,
+  sample: CallSample,
+): ConversationUsageState {
+  const withoutPrevious = adjustedTotals(state.totals, previous, -1)
+  const routesWithoutPrevious = adjustedRoutes(state.routes, previous, -1)
+  return {
+    ...state,
+    totals: adjustedTotals(withoutPrevious, sample, 1),
+    routes: adjustedRoutes(routesWithoutPrevious, sample, 1),
+    lastCall: { turn, step, sample },
+  }
+}
+
+function adjustedRoutes(
+  routes: Record<string, RouteUsage>,
+  sample: CallSample,
+  direction: 1 | -1,
+): Record<string, RouteUsage> {
+  const key = routeKey(sample.provider, sample.model)
+  const previous = routes[key] ?? {
+    provider: sample.provider,
+    model: sample.model,
+    ...zeroTotals(),
+  }
+  const nextRoute = {
+    ...previous,
+    ...adjustedTotals(previous, sample, direction),
+  }
+  const nextRoutes = { ...routes }
+  if (routeIsEmpty(nextRoute)) {
+    delete nextRoutes[key]
+  } else {
+    nextRoutes[key] = nextRoute
+  }
+  return nextRoutes
+}
+
+function routeIsEmpty(route: RouteUsage): boolean {
+  return route.measuredCalls + route.missingUsageCalls === 0
+    && route.contextWindow === undefined
+}
+
+function adjustedTotals(
+  target: UsageTotals,
+  sample: CallSample,
+  direction: 1 | -1,
+): UsageTotals {
+  const result = { ...target }
   const usage = sample.usage
   if (usage === undefined) {
-    target.missingUsageCalls += 1
-    return
+    result.missingUsageCalls += direction
+    return checkedTotals(result)
   }
-  target.measuredCalls += 1
-  target.inputTokens += usage.inputTokens
-  target.outputTokens += usage.outputTokens
-  target.cacheReadTokens += usage.cacheReadTokens ?? 0
-  target.cacheWriteTokens += usage.cacheWriteTokens ?? 0
+  result.measuredCalls += direction
+  result.inputTokens += direction * usage.inputTokens
+  result.outputTokens += direction * usage.outputTokens
+  result.cacheReadTokens += direction * (usage.cacheReadTokens ?? 0)
+  result.cacheWriteTokens += direction * (usage.cacheWriteTokens ?? 0)
   if (usage.reasoningTokens !== undefined) {
-    target.reasoningTokens += usage.reasoningTokens
-    target.reasoningUsageCalls += 1
+    result.reasoningTokens += direction * usage.reasoningTokens
+    result.reasoningUsageCalls += direction
   }
+  return checkedTotals(result)
+}
+
+function checkedTotals(totals: UsageTotals): UsageTotals {
+  const fields = [
+    'measuredCalls',
+    'missingUsageCalls',
+    'inputTokens',
+    'outputTokens',
+    'cacheReadTokens',
+    'cacheWriteTokens',
+    'reasoningTokens',
+    'reasoningUsageCalls',
+  ] as const satisfies readonly (keyof UsageTotals)[]
+  for (const name of fields) {
+    const value = totals[name]
+    if (!Number.isSafeInteger(value) || value < 0) {
+      throw new Error(`aggregate ${name} must be a non-negative safe integer`)
+    }
+  }
+  return totals
 }

@@ -27,16 +27,32 @@ describe('DSH bundle package contract', () => {
       dsh?: { bundle?: { patch?: string } }
       exports?: Record<string, unknown>
       files?: string[]
+      scripts?: Record<string, string>
     }
     const patch = await readFile(new URL('../cordis.patch.yml', import.meta.url), 'utf8')
 
     expect(packageJson.dsh?.bundle?.patch).toBe('./cordis.patch.yml')
     expect(packageJson.exports).toHaveProperty('./invariant')
     expect(packageJson.files).toContain('cordis.patch.yml')
+    expect(packageJson.files).toContain('LICENSE')
+    expect(packageJson.scripts?.test).toBe(
+      'vitest run --root .. --config vitest.config.ts dsh-usage-analytics/tests',
+    )
+    expect(packageJson.scripts?.prepack).toBe('pnpm run build')
+    expect(packageJson.scripts?.['test:coverage']).toBe(
+      'vitest run --coverage --coverage.include dsh-usage-analytics/src/**/*.ts --root .. --config vitest.config.ts dsh-usage-analytics/tests',
+    )
     expect(patch).toContain('id: dsh-usage-analytics')
     expect(patch).toContain('name: dsh-usage-analytics')
     expect(patch).toContain("name: 'dsh-usage-analytics/invariant'")
     expect(JSON.stringify(packageJson)).not.toContain('.codex-plugin')
     expect(JSON.stringify(packageJson)).not.toContain('marketplace')
+  })
+
+  it('ships its own MIT license instead of relying on a parent-directory fallback', async () => {
+    const license = await readFile(new URL('../LICENSE', import.meta.url), 'utf8')
+
+    expect(license).toContain('MIT License')
+    expect(license).toContain('Permission is hereby granted, free of charge')
   })
 })

@@ -29,7 +29,8 @@
     "lib/*.d.ts",
     "cordis.patch.yml",
     "README.md",
-    "CHANGELOG.md"
+    "CHANGELOG.md",
+    "LICENSE"
   ],
   "dsh": {
     "bundle": {
@@ -41,10 +42,11 @@
     "node": "^22.19.0 || >=24.0.0"
   },
   "scripts": {
-    "test": "vitest run tests/conversation-usage-projection.spec.ts",
-    "test:coverage": "vitest run --coverage tests/conversation-usage-projection.spec.ts",
+    "test": "vitest run --root .. --config vitest.config.ts dsh-usage-analytics/tests",
+    "test:coverage": "vitest run --coverage --coverage.include dsh-usage-analytics/src/**/*.ts --root .. --config vitest.config.ts dsh-usage-analytics/tests",
     "typecheck": "tsc --noEmit --composite false",
     "build": "tsdown",
+    "prepack": "pnpm run build",
     "pack:check": "node scripts/pack-check.mjs"
   },
   "dependencies": {

@@ -1,3 +1,6 @@
-- name: '@deepseek-ai/dsh-session'
-- name: '@deepseek-ai/dsh-session-projection'
-- name: 'dsh-usage-analytics'
+- id: invariants
+  name: '@deepseek-ai/dsh-invariants'
+- id: session
+  name: '@deepseek-ai/dsh-session'
+- id: session-projection
+  name: '@deepseek-ai/dsh-session-projection'
