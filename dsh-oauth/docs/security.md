@@ -12,7 +12,7 @@ Unknown provider failures are normalized into stable error codes and safe fields
 
 ## Storage ownership
 
-The OAuth store owns the structured credential: access token, refresh token, expiry, scopes, issuer, audience, subject, route, and provider metadata. A production store must use the operating system's secret facility:
+The OAuth store owns the structured credential: access token, refresh token, expiry, scopes, issuer, audience, subject, route, provider metadata, and account-scoped credential reference. A future production store must use the operating system's secret facility; this contract foundation does not implement one:
 
 | Platform | Required production backend |
 | --- | --- |
@@ -28,9 +28,9 @@ An inherited process-environment value has higher priority than `.credentials.ya
 
 ## Lifecycle ordering
 
-Login and refresh validate provider, issuer, audience, route, required scopes, token fields, and expiry before publishing. Structured credentials are persisted first; only after that commit succeeds may the short-lived access token be published to the DSH credential reference. A failed store rotation must not replace the last usable bridge value.
+Login and refresh validate provider, issuer, audience, route, required scopes, token fields, and expiry before publishing. Rotated credentials are persisted in non-ready state first; only successful bridge publication followed by the ready-state commit makes them usable. Publication failure attempts to clear the account-scoped bridge reference, keeps the stored account non-ready, and blocks managed-route delegation until republishing succeeds.
 
-Concurrent refreshes for one account share one flight. Different accounts remain isolated. Logout blocks new work, drains or aborts the account's active refresh, clears the bridge and local credential even if remote revocation fails, and then removes public account state. Disposal aborts and drains login and refresh operations before clearing bridge values and registrations.
+Concurrent refresh decisions for one account share a flight beginning before the store read. Different accounts and their bridge references remain isolated. Caller cancellation removes one waiter; the final waiter aborts the owned provider/store flight. Logout blocks new work, drains or aborts refresh, persists revoked cleanup state, and deletes it only after bridge clearing succeeds. Disposal aborts and drains tracked reads, login, and refresh operations before clearing every reference still traceable from the store.
 
 ## Provider requirements
 

@@ -5,7 +5,6 @@ import { installCredentialBridge } from '../src/bridge.ts'
 import type {
   OAuthAccount,
   OAuthAccountId,
-  OAuthCredentialRef,
   OAuthLoginOptions,
   OAuthService,
 } from '../src/types.ts'
@@ -29,7 +28,6 @@ function fakeService(
     providers: () => [{
       id: 'openai-codex',
       route: 'openai-codex',
-      credentialRef: 'DSH_OAUTH_CODEX' as OAuthCredentialRef,
       issuer: 'https://issuer.example',
       audience: 'codex-api',
       scopes: ['openid'],
@@ -99,6 +97,16 @@ describe('OAuth credential bridge', () => {
 
     expect(ensureFreshForRoute).not.toHaveBeenCalled()
     expect(downstream()).toBe(1)
+    await ctx.fiber.dispose()
+  })
+
+  it('fails closed when a managed route resolves no account association', async () => {
+    const ensureFreshForRoute = vi.fn<OAuthService['ensureFreshForRoute']>(async () => undefined)
+    const service = fakeService(ensureFreshForRoute)
+    const { ctx, downstream } = await harness(service)
+
+    await expect(consume(ctx, 'openai-codex')).rejects.toMatchObject({ code: 'reauth-required' })
+    expect(downstream()).toBe(0)
     await ctx.fiber.dispose()
   })
 

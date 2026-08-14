@@ -6,12 +6,14 @@ import type {
   OAuthAccountId,
   OAuthCredential,
   OAuthCredentialPublisher,
+  OAuthCredentialRef,
   OAuthCredentialStore,
   OAuthProvider,
   StoredOAuthAccount,
 } from '../src/types.ts'
 
 const accountId = 'account-1' as OAuthAccountId
+const accountCredentialReference = 'DSH_OAUTH_CODEX_07E998012C1137DECDF3EFBBB1C3EE6D79B015638CBC197BDBCCE1875DE4FAAD' as OAuthCredentialRef
 const refreshWindowMs = 30_000
 
 function credential(overrides: Partial<OAuthCredential> = {}): OAuthCredential {
@@ -78,6 +80,7 @@ function stored(
       updatedAt: 1,
     },
     credential: storedCredential,
+    credentialRef: accountCredentialReference,
   }
 }
 
@@ -174,11 +177,11 @@ describe('OAuthServiceImpl', () => {
     expect(account).not.toHaveProperty('accessToken')
     expect(account).not.toHaveProperty('refreshToken')
     expect(store.events[0]).toMatchObject({ kind: 'put', accountId })
-    expect(publisher.events[0]).toMatchObject({ kind: 'publish', credentialRef: 'DSH_OAUTH_CODEX' })
+    expect(publisher.events[0]).toMatchObject({ kind: 'publish', credentialRef: accountCredentialReference })
     expect(store.events[0]!.sequence).toBeLessThan(publisher.events[0]!.sequence)
 
     const resolved = await service.accountCredential(accountId)
-    expect(resolved).toEqual({ account, credentialRef: 'DSH_OAUTH_CODEX' })
+    expect(resolved).toEqual({ account, credentialRef: accountCredentialReference })
     expect(JSON.stringify(resolved)).not.toContain('access-initial-secret')
     expect(JSON.stringify(resolved)).not.toContain('refresh-initial-secret')
   })
@@ -262,11 +265,11 @@ describe('OAuthServiceImpl', () => {
     await Promise.all([service.ensureFresh(accountId), service.ensureFresh(accountId)])
 
     expect(provider.refreshCalls).toHaveLength(1)
-    const rotationPut = store.events.at(-1)
+    const rotationPut = store.events.at(-2)
     const rotationPublish = publisher.events.at(-1)
     expect(rotationPut!.sequence).toBeLessThan(rotationPublish!.sequence)
     expect((await store.get(accountId))?.credential.refreshToken).toBe('refresh-rotated-secret')
-    expect(publisher.values.get('DSH_OAUTH_CODEX')).toBe('access-rotated-secret')
+    expect(publisher.values.get(accountCredentialReference)).toBe('access-rotated-secret')
   })
 
   it('skips fresh credentials, supports forced rotation, and resolves managed routes', async () => {
@@ -279,7 +282,7 @@ describe('OAuthServiceImpl', () => {
     provider.refreshResults.push(credential({ expiresAt: 200_000 }))
     await service.rotate(accountId)
     expect(provider.refreshCalls).toHaveLength(1)
-    await expect(service.ensureFreshForRoute(provider.route)).resolves.toMatchObject({ credentialRef: provider.credentialRef })
+    await expect(service.ensureFreshForRoute(provider.route)).resolves.toMatchObject({ credentialRef: accountCredentialReference })
 
     await expect(new OAuthServiceImpl({
       providers: [],
@@ -294,7 +297,7 @@ describe('OAuthServiceImpl', () => {
       publisher: new FakeCredentialPublisher(),
       refreshWindowMs,
     })
-    await expect(noAccount.ensureFreshForRoute('openai-codex')).resolves.toBeUndefined()
+    await expect(noAccount.ensureFreshForRoute('openai-codex')).rejects.toMatchObject({ code: 'reauth-required' })
   })
 
   it('marks existing and refreshed authorization mismatches for reauthentication', async () => {
@@ -411,14 +414,11 @@ describe('OAuthServiceImpl', () => {
     const preCancelled = setup(90_000)
     preCancelled.provider.loginResults.push(credential({ expiresAt: 100_000 }))
     await preCancelled.service.login(preCancelled.provider.id)
-    const held = deferred<OAuthCredential>()
-    preCancelled.provider.refreshResults.push(held.promise)
     const cancelled = new AbortController()
     cancelled.abort()
     await expect(preCancelled.service.ensureFresh(accountId, { signal: cancelled.signal }))
       .rejects.toMatchObject({ code: 'refresh-temporary', retryable: true })
-    held.resolve(credential({ expiresAt: 200_000 }))
-    await preCancelled.provider.waitForRefreshCalls(1)
+    expect(preCancelled.provider.refreshCalls).toHaveLength(0)
 
     const resolving = setup(90_000)
     resolving.provider.loginResults.push(credential({ expiresAt: 100_000 }))
@@ -471,7 +471,7 @@ describe('OAuthServiceImpl', () => {
     await expect(refreshing).rejects.toBeInstanceOf(OAuthError)
     await expect(logout).resolves.toBeUndefined()
     expect(await store.get(accountId)).toBeUndefined()
-    expect(publisher.values.has('DSH_OAUTH_CODEX')).toBe(false)
+    expect(publisher.values.has(accountCredentialReference)).toBe(false)
     expect(provider.revokeCalls).toHaveLength(1)
     const clear = publisher.events.at(-1)
     const deletion = store.events.at(-1)
@@ -519,7 +519,7 @@ describe('OAuthServiceImpl', () => {
     clearProvider.loginResults.push(credential())
     await clearService.login(clearProvider.id)
     await expect(clearService.logout(accountId)).rejects.toMatchObject({ code: 'storage-unavailable' })
-    expect(await clearStore.get(accountId)).toBeUndefined()
+    expect((await clearStore.get(accountId))?.account.status).toBe('revoked')
 
     const deleteProvider = providerWith()
     const backing = new FakeOAuthStore()
@@ -719,7 +719,7 @@ describe('OAuthServiceImpl', () => {
       get: id => backing.get(id),
       async put(record) {
         writes += 1
-        if (writes > 1) throw new Error('status write secret')
+        if (writes > 2) throw new Error('status write secret')
         await backing.put(record)
       },
       delete: id => backing.delete(id),

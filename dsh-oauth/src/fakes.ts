@@ -126,14 +126,16 @@ export class FakeOAuthStore implements OAuthCredentialStore {
   private readonly records = new Map<OAuthAccountId, StoredOAuthAccount>()
 
   /** List copied records. */
-  async list(): Promise<readonly StoredOAuthAccount[]> {
-    return [...this.records.values()].map(copyStoredOAuthAccount)
+  async list(signal?: AbortSignal): Promise<readonly StoredOAuthAccount[]> {
+    const records = [...this.records.values()].map(copyStoredOAuthAccount)
+    return signal === undefined ? records : await awaitWithAbort(Promise.resolve(records), signal)
   }
 
   /** Get one copied record. */
-  async get(accountId: OAuthAccountId): Promise<StoredOAuthAccount | undefined> {
+  async get(accountId: OAuthAccountId, signal?: AbortSignal): Promise<StoredOAuthAccount | undefined> {
     const record = this.records.get(accountId)
-    return record === undefined ? undefined : copyStoredOAuthAccount(record)
+    const copied = record === undefined ? undefined : copyStoredOAuthAccount(record)
+    return signal === undefined ? copied : await awaitWithAbort(Promise.resolve(copied), signal)
   }
 
   /** Atomically replace one record. */

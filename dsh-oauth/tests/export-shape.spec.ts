@@ -11,7 +11,7 @@ describe('dsh-oauth Loader export shape', () => {
     const unwrapped = loader.unwrapExports(OAuth) as Record<string, unknown>
     expect(unwrapped).toBe(OAuth)
     expect(unwrapped.name).toBe('dsh-oauth')
-    expect(unwrapped.inject).toEqual(['llm', 'credentials', 'commands'])
+    expect(unwrapped.inject).toEqual(['llm', 'credentials', 'commands', 'dsh-oauth-runtime'])
     expect(unwrapped.Config).toBeDefined()
     expect(typeof unwrapped.apply).toBe('function')
   })

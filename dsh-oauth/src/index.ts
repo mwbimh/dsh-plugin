@@ -29,11 +29,10 @@ export const inject = plugin.inject
 export const Config: z<Config> = plugin.Config
 
 /**
- * Load the package without a host-owned provider composition.
+ * Load the package through the host-owned runtime-composition service.
  *
- * The published root deliberately fails loud until an allowed provider,
- * secure store, and credential publisher are composed by the host. It never
- * guesses endpoints or storage from Loader input.
+ * The canonical entry resolves `dsh-oauth-runtime` and fails loud when that
+ * host-owned provider, store, and publisher composition is absent.
  *
  * @param ctx - Owning plugin context.
  * @param config - Non-secret refresh policy.

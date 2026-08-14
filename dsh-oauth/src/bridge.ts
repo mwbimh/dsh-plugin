@@ -4,7 +4,9 @@ import z from '@deepseek-ai/schemastery'
 import type { StreamChunk } from '@deepseek-ai/dsh-llm'
 import { installOAuthCommands, type OAuthCommandRegistry } from './commands.ts'
 import { OAuthError } from './errors.ts'
-import type { OAuthService } from './types.ts'
+import type { OAuthRuntimeComposition, OAuthService } from './types.ts'
+
+export type { ManagedOAuthService } from './types.ts'
 
 /** Non-secret OAuth refresh policy configuration. */
 export interface OAuthPluginConfig {
@@ -18,21 +20,22 @@ export const OAuthPluginConfig: z<OAuthPluginConfig> = z.object({
 })
 
 /** Runtime-only composition seam for provider, secure store, and publisher dependencies. */
-export interface OAuthPluginDependencies {
-  /** Construct the OAuth service for one plugin fiber. */
-  createService(ctx: Context, config: Required<OAuthPluginConfig>): ManagedOAuthService
-}
+export interface OAuthPluginDependencies extends OAuthRuntimeComposition {}
 
-/** Plugin-owned service lifecycle in addition to the token-free public API. */
-export interface ManagedOAuthService extends OAuthService {
-  /** Abort and drain all owned OAuth work. */
-  dispose(): Promise<void>
+/** Cordis service key for host-owned provider, store, and publisher construction. */
+export const OAUTH_RUNTIME_SERVICE = 'dsh-oauth-runtime'
+
+declare module '@deepseek-ai/cordis' {
+  interface Context {
+    /** Host-owned OAuth provider, store, and publisher composition. */
+    'dsh-oauth-runtime': OAuthRuntimeComposition
+  }
 }
 
 /** Loader-compatible function-plugin namespace returned by the runtime factory. */
 export interface OAuthPluginModule {
   readonly name: 'dsh-oauth'
-  readonly inject: readonly ['llm', 'credentials', 'commands']
+  readonly inject: readonly string[]
   readonly Config: z<OAuthPluginConfig>
   apply(ctx: Context, config: OAuthPluginConfig): void
 }
@@ -63,7 +66,10 @@ export function installCredentialBridge(ctx: Context, service: OAuthService): vo
   ctx.on('llm/stream', (options, next): AsyncIterable<StreamChunk> => {
     if (!managedRoutes.has(options.provider)) return next()
     return (async function* () {
-      await service.ensureFreshForRoute(options.provider, { signal: controller.signal })
+      const association = await service.ensureFreshForRoute(options.provider, { signal: controller.signal })
+      if (association === undefined) {
+        throw new OAuthError({ code: 'reauth-required', provider: options.provider })
+      }
       yield* next()
     })()
   })
@@ -82,11 +88,14 @@ export function installCredentialBridge(ctx: Context, service: OAuthService): vo
 export function createOAuthPlugin(dependencies?: OAuthPluginDependencies): OAuthPluginModule {
   return {
     name: 'dsh-oauth',
-    inject: ['llm', 'credentials', 'commands'],
+    inject: dependencies === undefined
+      ? ['llm', 'credentials', 'commands', OAUTH_RUNTIME_SERVICE]
+      : ['llm', 'credentials', 'commands'],
     Config: OAuthPluginConfig,
     apply(ctx, config): void {
-      if (dependencies === undefined) throw new OAuthError({ code: 'configuration' })
-      const service = dependencies.createService(ctx, resolveConfig(config))
+      const runtime = dependencies ?? ctx.get(OAUTH_RUNTIME_SERVICE)
+      if (runtime === undefined) throw new OAuthError({ code: 'configuration' })
+      const service = runtime.createService(ctx, resolveConfig(config))
 
       ctx.effect(() => async () => {
         await service.dispose()

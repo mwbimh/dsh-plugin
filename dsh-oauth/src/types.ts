@@ -5,6 +5,7 @@ import type {
 } from './public.ts'
 
 export type {
+  ManagedOAuthService,
   OAuthAccount,
   OAuthAccountCredentialRef,
   OAuthAccountId,
@@ -13,6 +14,7 @@ export type {
   OAuthCredentialRef,
   OAuthLoginOptions,
   OAuthProviderInfo,
+  OAuthRuntimeComposition,
   OAuthService,
 } from './public.ts'
 
@@ -50,6 +52,7 @@ export interface OAuthCredential {
 export interface StoredOAuthAccount {
   readonly account: OAuthAccount
   readonly credential: OAuthCredential
+  readonly credentialRef: OAuthCredentialRef
 }
 
 /** Provider operation options. */
@@ -76,9 +79,9 @@ export interface OAuthProvider {
 /** Atomic storage seam for sensitive OAuth records. */
 export interface OAuthCredentialStore {
   /** List all stored records. */
-  list(): Promise<readonly StoredOAuthAccount[]>
+  list(signal?: AbortSignal): Promise<readonly StoredOAuthAccount[]>
   /** Read one stored record. */
-  get(accountId: OAuthAccountId): Promise<StoredOAuthAccount | undefined>
+  get(accountId: OAuthAccountId, signal?: AbortSignal): Promise<StoredOAuthAccount | undefined>
   /** Atomically replace one stored record. */
   put(record: StoredOAuthAccount): Promise<void>
   /** Delete one stored record. */
@@ -101,4 +104,6 @@ export interface OAuthServiceOptions {
   readonly refreshWindowMs: number
   readonly now?: () => number
   readonly createAccountId?: () => OAuthAccountId
+  /** Optional explicit managed-route selection for providers with multiple accounts. */
+  readonly routeBindings?: Readonly<Record<string, OAuthAccountId>>
 }

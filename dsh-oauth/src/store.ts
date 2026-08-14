@@ -15,5 +15,6 @@ export function copyStoredOAuthAccount(record: StoredOAuthAccount): StoredOAuthA
   return {
     account: copyOAuthAccount(record.account),
     credential: copyOAuthCredential(record.credential),
+    credentialRef: record.credentialRef,
   }
 }

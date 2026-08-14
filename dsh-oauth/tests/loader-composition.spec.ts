@@ -14,7 +14,8 @@ import LlmRuntime from '@deepseek-ai/dsh-llm'
 import LocalCredentialProvider from '@deepseek-ai/dsh-credentials-local'
 import * as LlmPiAi from '@deepseek-ai/dsh-llm-pi-ai'
 import { createLaunchEnvironmentSnapshot, DSH_LAUNCH_ENVIRONMENT_KEY } from '@deepseek-ai/dsh-launch-environment'
-import { createOAuthPlugin, type ManagedOAuthService } from '../src/bridge.ts'
+import type { ManagedOAuthService, OAuthRuntimeComposition } from '../src/types.ts'
+import * as OAuthPlugin from '../src/index.ts'
 import type {
   OAuthAccount,
   OAuthAccountId,
@@ -36,7 +37,7 @@ afterEach(async () => {
 })
 
 const accountId = 'account-loader' as OAuthAccountId
-const credentialReference = 'DSH_OAUTH_CODEX' as OAuthCredentialRef
+const credentialReference = 'DSH_OAUTH_CODEX_ACCOUNT_LOADER' as OAuthCredentialRef
 const account: OAuthAccount = {
   id: accountId,
   provider: 'openai-codex',
@@ -51,7 +52,6 @@ const account: OAuthAccount = {
 const provider: OAuthProviderInfo = {
   id: 'openai-codex',
   route: 'openai-codex',
-  credentialRef: credentialReference,
   issuer: 'https://issuer.example',
   audience: 'codex-api',
   scopes: ['openid'],
@@ -170,7 +170,7 @@ interface BootResult {
 async function boot(baseURL: string, environment: Record<string, string> = {}): Promise<BootResult> {
   root = await mkdtemp(join(tmpdir(), 'dsh-oauth-composition-'))
   const credentialsPath = join(root, '.credentials.yaml')
-  await writeFile(credentialsPath, `DSH_OAUTH_CODEX: ${JSON.stringify(oldToken)}\n`, { mode: 0o600 })
+  await writeFile(credentialsPath, `${credentialReference}: ${JSON.stringify(oldToken)}\n`, { mode: 0o600 })
   const configPath = join(root, 'cordis.yml')
   await writeFile(configPath, [
     '- id: llm',
@@ -182,6 +182,8 @@ async function boot(baseURL: string, environment: Record<string, string> = {}): 
     '    watch: false',
     '- id: commands',
     "  name: 'test-command-service'",
+    '- id: oauth-runtime',
+    "  name: 'test-oauth-runtime'",
     '- id: oauth',
     "  name: '@dsh-plugins/dsh-oauth'",
     '  config:',
@@ -191,7 +193,7 @@ async function boot(baseURL: string, environment: Record<string, string> = {}): 
     '  config:',
     '    providers:',
     '      openai-codex:',
-    '        apiKeyEnv: DSH_OAUTH_CODEX',
+    `        apiKeyEnv: ${credentialReference}`,
     `        baseURL: ${JSON.stringify(baseURL)}`,
     '        transport: sse',
     '',
@@ -204,17 +206,24 @@ async function boot(baseURL: string, environment: Record<string, string> = {}): 
   await ctx.plugin(Loader)
   ctx.loader.builtins.include = Include
   let oauth: LoaderOAuthService | undefined
-  const oauthModule = createOAuthPlugin({
-    createService(pluginCtx) {
-      oauth = new LoaderOAuthService(pluginCtx, `${baseURL}/oauth/token`)
-      return oauth
+  const runtimeModule = {
+    name: 'test-oauth-runtime',
+    apply(pluginCtx: Context) {
+      const runtime: OAuthRuntimeComposition = {
+        createService(serviceCtx) {
+          oauth = new LoaderOAuthService(serviceCtx, `${baseURL}/oauth/token`)
+          return oauth
+        },
+      }
+      pluginCtx.provide('dsh-oauth-runtime', runtime)
     },
-  })
+  }
   const modules = new Map<string, unknown>([
     ['test-llm-service', LlmRuntime],
     ['test-command-service', CommandRuntime],
     ['@deepseek-ai/dsh-credentials-local', LocalCredentialProvider],
-    ['@dsh-plugins/dsh-oauth', oauthModule],
+    ['test-oauth-runtime', runtimeModule],
+    ['@dsh-plugins/dsh-oauth', OAuthPlugin],
     ['@deepseek-ai/dsh-llm-pi-ai', LlmPiAi],
   ])
   ctx.loader.internal = {
@@ -279,7 +288,7 @@ describe('dsh-oauth real Loader composition', () => {
 
   it('fails loud when the launching environment shadows credential publication', async () => {
     const mock = await startServer()
-    const { ctx } = await boot(mock.url, { DSH_OAUTH_CODEX: oldToken })
+    const { ctx } = await boot(mock.url, { [credentialReference]: oldToken })
 
     await expect(consume(ctx)).rejects.toThrow(/launching environment|shadow/iu)
     expect(mock.state.refreshes).toBe(1)

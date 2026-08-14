@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { OAuthError, normalizeOAuthError } from './errors.ts'
 import { assertCredentialAuthorized, providerInfo } from './provider.ts'
 import { copyOAuthAccount } from './store.ts'
@@ -7,6 +7,7 @@ import type {
   OAuthAccountCredentialRef,
   OAuthAccountId,
   OAuthCredential,
+  OAuthCredentialRef,
   OAuthLoginOptions,
   OAuthProvider,
   OAuthProviderInfo,
@@ -17,12 +18,18 @@ import type {
 
 interface RefreshFlight {
   readonly controller: AbortController
+  readonly force: boolean
   readonly promise: Promise<void>
+  waiters: number
+  settled: boolean
 }
 
-/** Production OAuth lifecycle coordinator over provider, secure-store, and bridge seams. */
+const REF_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/u
+
+/** OAuth contract-foundation lifecycle coordinator over provider, store, and bridge seams. */
 export class OAuthServiceImpl implements OAuthService {
   private readonly providerMap = new Map<string, OAuthProvider>()
+  private readonly routeBindings = new Map<string, OAuthAccountId>()
   private readonly store: OAuthServiceOptions['store']
   private readonly publisher: OAuthServiceOptions['publisher']
   private readonly refreshWindowMs: number
@@ -32,6 +39,8 @@ export class OAuthServiceImpl implements OAuthService {
   private readonly controllers = new Set<AbortController>()
   private readonly operations = new Set<Promise<unknown>>()
   private readonly blockedAccounts = new Set<OAuthAccountId>()
+  private readonly publishedVersions = new Map<OAuthAccountId, number>()
+  private disposePromise: Promise<void> | undefined
   private disposed = false
 
   /** Create a lifecycle service with explicit authorization and refresh policy dependencies. */
@@ -42,7 +51,7 @@ export class OAuthServiceImpl implements OAuthService {
     const routeOwners = new Set<string>()
     const credentialOwners = new Set<string>()
     for (const provider of options.providers) {
-      if (provider.id.length === 0 || provider.route.length === 0 || provider.credentialRef.length === 0
+      if (provider.id.length === 0 || provider.route.length === 0 || !REF_PATTERN.test(provider.credentialRef)
         || provider.issuer.length === 0 || provider.audience.length === 0 || this.providerMap.has(provider.id)) {
         throw new OAuthError({
           code: 'configuration',
@@ -59,6 +68,10 @@ export class OAuthServiceImpl implements OAuthService {
       routeOwners.add(provider.route)
       credentialOwners.add(provider.credentialRef)
     }
+    for (const [route, accountId] of Object.entries(options.routeBindings ?? {})) {
+      if (!routeOwners.has(route) || accountId.length === 0) throw new OAuthError({ code: 'configuration' })
+      this.routeBindings.set(route, accountId)
+    }
     this.store = options.store
     this.publisher = options.publisher
     this.refreshWindowMs = options.refreshWindowMs
@@ -72,24 +85,37 @@ export class OAuthServiceImpl implements OAuthService {
   }
 
   /** List token-free account metadata in stable order. */
-  async accounts(provider?: string): Promise<readonly OAuthAccount[]> {
+  async accounts(provider?: string, options: OAuthLoginOptions = {}): Promise<readonly OAuthAccount[]> {
     this.assertActive()
-    const records = await this.readRecords()
-    return records
-      .filter(record => provider === undefined || record.account.provider === provider)
-      .map(record => copyOAuthAccount(record.account))
-      .sort((left, right) => left.createdAt - right.createdAt || left.id.localeCompare(right.id))
+    const controller = this.operationController(options.signal)
+    const operation = (async () => {
+      const records = await this.readRecords(controller.signal)
+      return records
+        .filter(record => provider === undefined || record.account.provider === provider)
+        .map(record => copyOAuthAccount(record.account))
+        .sort((left, right) => left.createdAt - right.createdAt || left.id.localeCompare(right.id))
+    })()
+    return await this.trackOperation(operation, controller)
   }
 
-  /** Resolve one account and its non-secret DSH credential reference. */
-  async accountCredential(accountId: OAuthAccountId): Promise<OAuthAccountCredentialRef> {
+  /** Ensure freshness and publication before returning a token-free account association. */
+  async accountCredential(
+    accountId: OAuthAccountId,
+    options: OAuthLoginOptions = {},
+  ): Promise<OAuthAccountCredentialRef> {
     this.assertAccountActive(accountId)
-    const record = await this.readRecord(accountId)
-    const provider = this.requireProvider(record.account.provider, accountId)
-    return { account: copyOAuthAccount(record.account), credentialRef: provider.credentialRef }
+    const controller = this.operationController(options.signal)
+    const operation = (async () => {
+      await this.ensureFresh(accountId, { signal: controller.signal })
+      const record = await this.readRecord(accountId, controller.signal)
+      this.assertAccountActive(accountId)
+      if (record.account.status !== 'ready') throw new OAuthError({ code: 'reauth-required', accountId })
+      return association(record)
+    })()
+    return await this.trackOperation(operation, controller)
   }
 
-  /** Run provider login, store the private credential, then publish its access token. */
+  /** Run provider login, persist a non-ready credential, then publish and commit readiness. */
   async login(providerId: string, options: OAuthLoginOptions = {}): Promise<OAuthAccount> {
     this.assertActive()
     const provider = this.requireProvider(providerId)
@@ -104,34 +130,29 @@ export class OAuthServiceImpl implements OAuthService {
           provider: provider.id,
         })
       }
-      if (controller.signal.aborted) {
-        throw new OAuthError({ code: 'login-cancelled', provider: provider.id })
-      }
+      if (controller.signal.aborted) throw new OAuthError({ code: 'login-cancelled', provider: provider.id })
       assertCredentialAuthorized(provider, credential, 'login')
       const timestamp = this.now()
-      const account: OAuthAccount = {
-        id: this.createAccountId(),
-        provider: provider.id,
-        ...(credential.displayName === undefined ? {} : { displayName: credential.displayName }),
-        ...(credential.subject === undefined ? {} : { subject: credential.subject }),
-        scopes: [...credential.scopes],
-        status: 'ready',
-        expiresAt: credential.expiresAt,
-        createdAt: timestamp,
-        updatedAt: timestamp,
-      }
-      await this.storeRecord({ account, credential }, provider.id, account.id)
-      try {
-        await this.publisher.publish(provider.credentialRef, credential.accessToken)
-      } catch (error) {
-        await this.markStatus({ account, credential }, 'error')
-        throw normalizeOAuthError(error, {
-          code: 'storage-unavailable',
+      const accountId = this.createAccountId()
+      const record: StoredOAuthAccount = {
+        account: {
+          id: accountId,
           provider: provider.id,
-          accountId: account.id,
-        })
+          ...(credential.displayName === undefined ? {} : { displayName: credential.displayName }),
+          ...(credential.subject === undefined ? {} : { subject: credential.subject }),
+          scopes: [...credential.scopes],
+          status: 'error',
+          expiresAt: credential.expiresAt,
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        },
+        credential,
+        credentialRef: accountCredentialRef(provider.credentialRef, accountId),
       }
-      return copyOAuthAccount(account)
+      await this.storeRecord(record, provider.id, accountId)
+      if (controller.signal.aborted) throw new OAuthError({ code: 'login-cancelled', provider: provider.id })
+      const ready = await this.publishAndCommitReady(record, provider, controller.signal)
+      return copyOAuthAccount(ready.account)
     })()
     return await this.trackOperation(operation, controller)
   }
@@ -139,20 +160,20 @@ export class OAuthServiceImpl implements OAuthService {
   /** Ensure an account token remains valid beyond the configured refresh window. */
   async ensureFresh(accountId: OAuthAccountId, options: OAuthLoginOptions = {}): Promise<void> {
     this.assertAccountActive(accountId)
-    const controller = this.operationController()
-    const operation = this.ensureFreshInternal(accountId, options.signal, controller.signal)
+    const controller = this.operationController(options.signal)
+    const operation = this.runAccountFlight(accountId, false, controller.signal)
     return await this.trackOperation(operation, controller)
   }
 
   /** Force one account through refresh-token rotation. */
   async rotate(accountId: OAuthAccountId, options: OAuthLoginOptions = {}): Promise<void> {
     this.assertAccountActive(accountId)
-    const controller = this.operationController()
-    const operation = this.rotateInternal(accountId, options.signal, controller.signal)
+    const controller = this.operationController(options.signal)
+    const operation = this.runAccountFlight(accountId, true, controller.signal)
     return await this.trackOperation(operation, controller)
   }
 
-  /** Refresh the sole account for a managed route and return only its public reference. */
+  /** Refresh the selected account for a managed route and return only its public association. */
   async ensureFreshForRoute(
     route: string,
     options: OAuthLoginOptions = {},
@@ -161,15 +182,32 @@ export class OAuthServiceImpl implements OAuthService {
     const providers = [...this.providerMap.values()].filter(provider => provider.route === route)
     if (providers.length === 0) return undefined
     const provider = providers[0]!
-    const records = (await this.readRecords()).filter(record => record.account.provider === provider.id)
-    if (records.length === 0) return undefined
-    if (records.length > 1) throw new OAuthError({ code: 'configuration', provider: provider.id })
-    const accountId = records[0]!.account.id
-    await this.ensureFresh(accountId, options)
-    return await this.accountCredential(accountId)
+    const controller = this.operationController(options.signal)
+    const operation = (async () => {
+      const records = (await this.readRecords(controller.signal))
+        .filter(record => record.account.provider === provider.id)
+      const boundId = this.routeBindings.get(route)
+      const selected = boundId === undefined
+        ? records.length === 1 ? records[0] : undefined
+        : records.find(record => record.account.id === boundId)
+      if (selected === undefined) {
+        throw new OAuthError({
+          code: records.length === 0 || boundId !== undefined ? 'reauth-required' : 'configuration',
+          provider: provider.id,
+          ...(boundId === undefined ? {} : { accountId: boundId }),
+        })
+      }
+      await this.ensureFresh(selected.account.id, { signal: controller.signal })
+      const refreshed = await this.readRecord(selected.account.id, controller.signal)
+      if (refreshed.account.provider !== provider.id || refreshed.account.status !== 'ready') {
+        throw new OAuthError({ code: 'configuration', provider: provider.id, accountId: refreshed.account.id })
+      }
+      return association(refreshed)
+    })()
+    return await this.trackOperation(operation, controller)
   }
 
-  /** Block account work, drain refresh, clear local credentials, then attempt remote revoke. */
+  /** Block account work, drain refresh, retain cleanup state until clear and delete both succeed. */
   async logout(accountId: OAuthAccountId): Promise<void> {
     this.assertActive()
     this.blockedAccounts.add(accountId)
@@ -182,39 +220,38 @@ export class OAuthServiceImpl implements OAuthService {
     activeFlight?.controller.abort()
     if (activeFlight !== undefined) await activeFlight.promise.catch((_logoutOwnedAbort) => undefined)
 
-    let record: StoredOAuthAccount | undefined
-    try {
-      record = await this.store.get(accountId)
-    } catch (error) {
-      throw normalizeOAuthError(error, { code: 'storage-unavailable', accountId })
-    }
+    const record = await this.readOptionalRecord(accountId, controller.signal)
     if (record === undefined) return
     const provider = this.requireProvider(record.account.provider, accountId)
-    let localFailure = false
-    try {
-      await this.publisher.clear(provider.credentialRef)
-    } catch (bridgeClearFailure) {
-      void bridgeClearFailure
-      localFailure = true
+    const revoked: StoredOAuthAccount = {
+      ...record,
+      account: { ...record.account, status: 'revoked', updatedAt: this.now() },
     }
+    if (record.account.status !== 'revoked') await this.storeRecord(revoked, provider.id, accountId)
+    try {
+      await this.publisher.clear(revoked.credentialRef)
+    } catch (error) {
+      throw normalizeOAuthError(error, { code: 'storage-unavailable', provider: provider.id, accountId })
+    }
+    this.publishedVersions.delete(accountId)
     try {
       await this.store.delete(accountId)
-    } catch (credentialDeleteFailure) {
-      void credentialDeleteFailure
-      localFailure = true
+    } catch (error) {
+      throw normalizeOAuthError(error, { code: 'storage-unavailable', provider: provider.id, accountId })
     }
     if (provider.revoke !== undefined) {
-      await provider.revoke(record.credential, { signal: controller.signal })
+      await provider.revoke(revoked.credential, { signal: controller.signal })
         .catch((_bestEffortRemoteRevoke) => undefined)
-    }
-    if (localFailure) {
-      throw new OAuthError({ code: 'storage-unavailable', provider: provider.id, accountId })
     }
   }
 
-  /** Abort all work, await quiescence, and remove published access credentials. */
-  async dispose(): Promise<void> {
-    if (this.disposed) return
+  /** Abort all work, await quiescence, and remove every traceable published access credential. */
+  dispose(): Promise<void> {
+    this.disposePromise ??= this.disposeInternal()
+    return this.disposePromise
+  }
+
+  private async disposeInternal(): Promise<void> {
     this.disposed = true
     for (const controller of this.controllers) controller.abort()
     await Promise.allSettled(this.operations)
@@ -225,38 +262,81 @@ export class OAuthServiceImpl implements OAuthService {
       void credentialStoreUnavailableDuringDisposal
       return
     }
-    await Promise.allSettled(records.map(record => {
-      const provider = this.providerMap.get(record.account.provider)
-      return provider === undefined ? Promise.resolve() : this.publisher.clear(provider.credentialRef)
-    }))
+    await Promise.allSettled(records.map(record => this.publisher.clear(record.credentialRef)))
+    this.publishedVersions.clear()
   }
 
-  private async ensureFreshInternal(
+  private async runAccountFlight(
     accountId: OAuthAccountId,
-    callerSignal: AbortSignal | undefined,
-    lifecycleSignal: AbortSignal,
+    force: boolean,
+    callerSignal: AbortSignal,
   ): Promise<void> {
-    const { provider, record } = await this.loadAuthorizedAccount(accountId, lifecycleSignal)
-    if (this.now() + this.refreshWindowMs < record.credential.expiresAt) return
-    await this.refresh(accountId, record, provider, callerSignal)
+    if (callerSignal.aborted) throw new OAuthError({ code: 'refresh-temporary', retryable: true })
+    const active = this.flights.get(accountId)
+    if (active !== undefined) {
+      await this.waitForFlight(active, callerSignal)
+      if (!force || active.force) return
+      return await this.runAccountFlight(accountId, true, callerSignal)
+    }
+    const controller = this.operationController()
+    const promise = this.performAccountOperation(accountId, force, controller)
+    const flight: RefreshFlight = { controller, force, promise, waiters: 0, settled: false }
+    this.flights.set(accountId, flight)
+    void promise.then(
+      () => this.finishFlight(accountId, flight),
+      () => this.finishFlight(accountId, flight),
+    )
+    await this.waitForFlight(flight, callerSignal)
   }
 
-  private async rotateInternal(
+  private async waitForFlight(flight: RefreshFlight, signal: AbortSignal): Promise<void> {
+    flight.waiters += 1
+    try {
+      await waitForCaller(flight.promise, signal)
+    } catch (error) {
+      if (this.disposed) throw new OAuthError({ code: 'internal' })
+      throw error
+    } finally {
+      flight.waiters -= 1
+      if (signal.aborted && flight.waiters === 0 && !flight.settled) flight.controller.abort()
+    }
+  }
+
+  private async performAccountOperation(
     accountId: OAuthAccountId,
-    callerSignal: AbortSignal | undefined,
-    lifecycleSignal: AbortSignal,
+    force: boolean,
+    controller: AbortController,
   ): Promise<void> {
-    const { provider, record } = await this.loadAuthorizedAccount(accountId, lifecycleSignal)
-    await this.refresh(accountId, record, provider, callerSignal)
+    const operation = (async () => {
+      const { provider, record } = await this.loadAuthorizedAccount(accountId, controller.signal)
+      if (record.account.status === 'error') {
+        await this.publishAndCommitReady(record, provider, controller.signal)
+        return
+      }
+      if (!force && this.now() + this.refreshWindowMs < record.credential.expiresAt) {
+        if (this.publishedVersions.get(accountId) !== record.account.updatedAt) {
+          await this.publishAndCommitReady({
+            ...record,
+            account: { ...record.account, status: 'error' },
+          }, provider, controller.signal)
+        }
+        return
+      }
+      await this.performRefresh(accountId, record, provider, controller)
+    })()
+    return await this.trackOperation(operation, controller)
   }
 
   private async loadAuthorizedAccount(
     accountId: OAuthAccountId,
     lifecycleSignal: AbortSignal,
   ): Promise<{ readonly provider: OAuthProvider; readonly record: StoredOAuthAccount }> {
-    const record = await this.readRecord(accountId)
-    if (lifecycleSignal.aborted) throw new OAuthError({ code: 'internal', accountId })
+    const record = await this.readRecord(accountId, lifecycleSignal)
+    if (lifecycleSignal.aborted) throw this.cancelledError(accountId)
     this.assertAccountActive(accountId)
+    if (record.account.status === 'reauth-required' || record.account.status === 'revoked') {
+      throw new OAuthError({ code: 'reauth-required', provider: record.account.provider, accountId })
+    }
     const provider = this.requireProvider(record.account.provider, accountId)
     try {
       assertCredentialAuthorized(provider, record.credential, 'refresh')
@@ -267,101 +347,115 @@ export class OAuthServiceImpl implements OAuthService {
     return { provider, record }
   }
 
-  private async refresh(
-    accountId: OAuthAccountId,
-    record: StoredOAuthAccount,
-    provider: OAuthProvider,
-    callerSignal?: AbortSignal,
-  ): Promise<void> {
-    let flight = this.flights.get(accountId)
-    if (flight === undefined) {
-      const controller = this.operationController()
-      const promise = this.performRefresh(accountId, record, provider, controller)
-      flight = { controller, promise }
-      this.flights.set(accountId, flight)
-      void promise.then(
-        () => this.finishFlight(accountId),
-        () => this.finishFlight(accountId),
-      )
-    }
-    await waitForCaller(flight.promise, callerSignal)
-  }
-
   private async performRefresh(
     accountId: OAuthAccountId,
     record: StoredOAuthAccount,
     provider: OAuthProvider,
     controller: AbortController,
   ): Promise<void> {
-    const operation = (async () => {
-      let credential: OAuthCredential
-      try {
-        credential = await provider.refresh(record.credential, { signal: controller.signal })
-      } catch (error) {
-        const code = this.blockedAccounts.has(accountId)
-          ? 'reauth-required'
-          : this.disposed ? 'internal' : 'refresh-temporary'
-        const normalized = normalizeOAuthError(error, {
-          code,
-          provider: provider.id,
-          accountId,
-          retryable: code === 'refresh-temporary',
-        })
-        if (isTerminalAuthorizationError(normalized)) await this.markStatus(record, 'reauth-required')
-        throw normalized
-      }
-      if (controller.signal.aborted) {
-        throw new OAuthError({
-          code: this.disposed ? 'internal' : 'reauth-required',
-          provider: provider.id,
-          accountId,
-        })
-      }
-      try {
-        assertCredentialAuthorized(provider, credential, 'refresh')
-      } catch (error) {
-        await this.markStatus(record, 'reauth-required')
-        throw error
-      }
-      const displayName = credential.displayName ?? record.account.displayName
-      const subject = credential.subject ?? record.account.subject
-      const account: OAuthAccount = {
+    let credential: OAuthCredential
+    try {
+      credential = await provider.refresh(record.credential, { signal: controller.signal })
+    } catch (error) {
+      const code = this.blockedAccounts.has(accountId)
+        ? 'reauth-required'
+        : this.disposed ? 'internal' : 'refresh-temporary'
+      const normalized = normalizeOAuthError(error, {
+        code,
+        provider: provider.id,
+        accountId,
+        retryable: code === 'refresh-temporary',
+      })
+      if (isTerminalAuthorizationError(normalized)) await this.markStatus(record, 'reauth-required')
+      throw normalized
+    }
+    if (controller.signal.aborted) throw this.cancelledError(accountId, provider.id)
+    try {
+      assertCredentialAuthorized(provider, credential, 'refresh')
+    } catch (error) {
+      await this.markStatus(record, 'reauth-required')
+      throw error
+    }
+    const displayName = credential.displayName ?? record.account.displayName
+    const subject = credential.subject ?? record.account.subject
+    const pending: StoredOAuthAccount = {
+      credential,
+      credentialRef: record.credentialRef,
+      account: {
         ...record.account,
         ...(displayName === undefined ? {} : { displayName }),
         ...(subject === undefined ? {} : { subject }),
         scopes: [...credential.scopes],
-        status: 'ready',
+        status: 'error',
         expiresAt: credential.expiresAt,
         updatedAt: this.now(),
-      }
-      await this.storeRecord({ account, credential }, provider.id, accountId)
-      try {
-        await this.publisher.publish(provider.credentialRef, credential.accessToken)
-      } catch (error) {
-        await this.markStatus({ account, credential }, 'error')
-        throw normalizeOAuthError(error, {
-          code: 'storage-unavailable',
-          provider: provider.id,
-          accountId,
-        })
-      }
-    })()
-    return await this.trackOperation(operation, controller)
+      },
+    }
+    await this.storeRecord(pending, provider.id, accountId)
+    if (controller.signal.aborted) {
+      await this.clearPublished(pending)
+      throw this.cancelledError(accountId, provider.id)
+    }
+    await this.publishAndCommitReady(pending, provider, controller.signal)
   }
 
-  private finishFlight(accountId: OAuthAccountId): void {
+  private async publishAndCommitReady(
+    record: StoredOAuthAccount,
+    provider: OAuthProvider,
+    signal: AbortSignal,
+  ): Promise<StoredOAuthAccount> {
+    try {
+      await this.publisher.publish(record.credentialRef, record.credential.accessToken)
+    } catch (error) {
+      this.publishedVersions.delete(record.account.id)
+      await this.clearPublished(record)
+      throw normalizeOAuthError(error, {
+        code: 'storage-unavailable',
+        provider: provider.id,
+        accountId: record.account.id,
+      })
+    }
+    if (signal.aborted) {
+      this.publishedVersions.delete(record.account.id)
+      await this.clearPublished(record)
+      throw this.cancelledError(record.account.id, provider.id)
+    }
+    const ready: StoredOAuthAccount = {
+      ...record,
+      account: { ...record.account, status: 'ready' },
+    }
+    try {
+      await this.storeRecord(ready, provider.id, record.account.id)
+    } catch (error) {
+      this.publishedVersions.delete(record.account.id)
+      await this.clearPublished(record)
+      throw error
+    }
+    this.publishedVersions.set(record.account.id, ready.account.updatedAt)
+    return ready
+  }
+
+  private async clearPublished(record: StoredOAuthAccount): Promise<void> {
+    try {
+      await this.publisher.clear(record.credentialRef)
+    } catch (bridgeClearFailure) {
+      void bridgeClearFailure
+    }
+  }
+
+  private finishFlight(accountId: OAuthAccountId, flight: RefreshFlight): void {
+    flight.settled = true
     this.flights.delete(accountId)
   }
 
   private async markStatus(record: StoredOAuthAccount, status: OAuthAccount['status']): Promise<void> {
     try {
       await this.store.put({
-        credential: record.credential,
+        ...record,
         account: { ...record.account, status, updatedAt: this.now() },
       })
     } catch (statusStorageFailure) {
       void statusStorageFailure
-      // The original classified failure remains the only public error.
     }
   }
 
@@ -373,21 +467,26 @@ export class OAuthServiceImpl implements OAuthService {
     }
   }
 
-  private async readRecords(): Promise<readonly StoredOAuthAccount[]> {
+  private async readRecords(signal?: AbortSignal): Promise<readonly StoredOAuthAccount[]> {
     try {
-      return await this.store.list()
+      return await this.store.list(signal)
     } catch (error) {
+      if (signal?.aborted) throw this.cancelledError()
       throw normalizeOAuthError(error, { code: 'storage-unavailable' })
     }
   }
 
-  private async readRecord(accountId: OAuthAccountId): Promise<StoredOAuthAccount> {
-    let record: StoredOAuthAccount | undefined
+  private async readOptionalRecord(accountId: OAuthAccountId, signal?: AbortSignal): Promise<StoredOAuthAccount | undefined> {
     try {
-      record = await this.store.get(accountId)
+      return await this.store.get(accountId, signal)
     } catch (error) {
+      if (signal?.aborted) throw this.cancelledError(accountId)
       throw normalizeOAuthError(error, { code: 'storage-unavailable', accountId })
     }
+  }
+
+  private async readRecord(accountId: OAuthAccountId, signal?: AbortSignal): Promise<StoredOAuthAccount> {
+    const record = await this.readOptionalRecord(accountId, signal)
     if (record === undefined) throw new OAuthError({ code: 'reauth-required', accountId })
     return record
   }
@@ -424,6 +523,16 @@ export class OAuthServiceImpl implements OAuthService {
     }
   }
 
+  private cancelledError(accountId?: OAuthAccountId, provider?: string): OAuthError {
+    return new OAuthError({
+      code: this.disposed ? 'internal' : this.blockedAccounts.has(accountId as OAuthAccountId)
+        ? 'reauth-required' : 'refresh-temporary',
+      ...(provider === undefined ? {} : { provider }),
+      ...(accountId === undefined ? {} : { accountId }),
+      ...(this.disposed || this.blockedAccounts.has(accountId as OAuthAccountId) ? {} : { retryable: true }),
+    })
+  }
+
   private assertActive(): void {
     if (this.disposed) throw new OAuthError({ code: 'internal' })
   }
@@ -434,12 +543,20 @@ export class OAuthServiceImpl implements OAuthService {
   }
 }
 
+function accountCredentialRef(prefix: OAuthCredentialRef, accountId: OAuthAccountId): OAuthCredentialRef {
+  const digest = createHash('sha256').update(accountId).digest('hex').toUpperCase()
+  return `${prefix}_${digest}` as OAuthCredentialRef
+}
+
+function association(record: StoredOAuthAccount): OAuthAccountCredentialRef {
+  return { account: copyOAuthAccount(record.account), credentialRef: record.credentialRef }
+}
+
 function isTerminalAuthorizationError(error: OAuthError): boolean {
   return error.code === 'reauth-required' || error.code === 'scope-mismatch' || error.code === 'route-conflict'
 }
 
-async function waitForCaller<T>(operation: Promise<T>, signal?: AbortSignal): Promise<T> {
-  if (signal === undefined) return await operation
+async function waitForCaller<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
   if (signal.aborted) throw new OAuthError({ code: 'refresh-temporary', retryable: true })
   return await new Promise<T>((resolve, reject) => {
     const abort = () => reject(new OAuthError({ code: 'refresh-temporary', retryable: true }))

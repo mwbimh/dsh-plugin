@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { installOAuthCommands, type OAuthCommandDefinition, type OAuthCommandRegistry } from '../src/commands.ts'
 import { OAuthError } from '../src/errors.ts'
-import type { OAuthAccount, OAuthAccountId, OAuthCredentialRef, OAuthService } from '../src/types.ts'
+import type { OAuthAccount, OAuthAccountId, OAuthService } from '../src/types.ts'
 
 const account: OAuthAccount = {
   id: 'account-1' as OAuthAccountId,
@@ -32,7 +32,6 @@ function harness(listedAccounts: readonly OAuthAccount[] = [account]) {
     providers: () => [{
       id: 'openai-codex',
       route: 'openai-codex',
-      credentialRef: 'DSH_OAUTH_CODEX' as OAuthCredentialRef,
       issuer: 'https://issuer.example',
       audience: 'codex-api',
       scopes: ['openid'],

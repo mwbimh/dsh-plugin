@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import LlmRuntime from '@deepseek-ai/dsh-llm'
-import { apply as applyWithoutDependencies } from '../src/index.ts'
+import { apply as applyCanonical } from '../src/index.ts'
 import { createOAuthPlugin, type ManagedOAuthService } from '../src/bridge.ts'
 import type { OAuthCommandDefinition, OAuthCommandRegistry } from '../src/commands.ts'
 
@@ -24,7 +24,22 @@ function fakeService() {
 
 describe('dsh-oauth plugin lifecycle', () => {
   it('fails loud when no provider/store composition was injected', () => {
-    expect(() => applyWithoutDependencies(new Context(), {})).toThrowError(expect.objectContaining({ code: 'configuration' }))
+    expect(() => applyCanonical(new Context(), {})).toThrowError(expect.objectContaining({ code: 'configuration' }))
+  })
+
+  it('constructs the canonical published apply through the host runtime-composition service', async () => {
+    const ctx = new Context()
+    await ctx.plugin(LlmRuntime)
+    ctx.provide('credentials', {})
+    ctx.provide('commands', { register: () => () => {} })
+    const { service, dispose } = fakeService()
+    ctx.provide('dsh-oauth-runtime', { createService: () => service })
+
+    applyCanonical(ctx, { refreshWindowMs: 5_000 })
+
+    expect(ctx.get('dsh-oauth')).toBe(service)
+    await ctx.fiber.dispose()
+    expect(dispose).toHaveBeenCalledOnce()
   })
 
   it('defaults programmatic config and fails loud when the required command service is absent', async () => {

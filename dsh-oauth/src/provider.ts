@@ -33,7 +33,6 @@ export function providerInfo(provider: OAuthProvider): OAuthProviderInfo {
   return {
     id: provider.id,
     route: provider.route,
-    credentialRef: provider.credentialRef,
     issuer: provider.issuer,
     audience: provider.audience,
     scopes: [...provider.scopes],

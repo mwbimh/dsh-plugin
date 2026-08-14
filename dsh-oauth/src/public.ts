@@ -1,3 +1,5 @@
+import type { Context } from '@deepseek-ai/cordis'
+
 /** Stable local OAuth account identifier. */
 export type OAuthAccountId = string & { readonly __oauthAccountId: unique symbol }
 
@@ -24,7 +26,6 @@ export interface OAuthAccount {
 export interface OAuthProviderInfo {
   readonly id: string
   readonly route: string
-  readonly credentialRef: OAuthCredentialRef
   readonly issuer: string
   readonly audience: string
   readonly scopes: readonly string[]
@@ -44,9 +45,9 @@ export interface OAuthAccountCredentialRef {
 /** Optional account lookup service consumed without a hard plugin dependency. */
 export interface OAuthAccountService {
   /** Return token-free account metadata, optionally filtered by provider. */
-  accounts(provider?: string): Promise<readonly OAuthAccount[]>
-  /** Resolve token-free account metadata and its DSH credential reference. */
-  accountCredential(accountId: OAuthAccountId): Promise<OAuthAccountCredentialRef>
+  accounts(provider?: string, options?: OAuthLoginOptions): Promise<readonly OAuthAccount[]>
+  /** Ensure publication of a fresh credential, then return its token-free account association. */
+  accountCredential(accountId: OAuthAccountId, options?: OAuthLoginOptions): Promise<OAuthAccountCredentialRef>
 }
 
 /** Public OAuth account and token lifecycle service. */
@@ -61,6 +62,18 @@ export interface OAuthService extends OAuthAccountService {
   ensureFresh(accountId: OAuthAccountId, options?: OAuthLoginOptions): Promise<void>
   /** Force one account through refresh-token rotation. */
   rotate(accountId: OAuthAccountId, options?: OAuthLoginOptions): Promise<void>
-  /** Refresh the sole account for a route and return its public reference. */
+  /** Refresh the explicitly bound or sole unambiguous account for a managed route. */
   ensureFreshForRoute(route: string, options?: OAuthLoginOptions): Promise<OAuthAccountCredentialRef | undefined>
+}
+
+/** Plugin-owned public service plus lifecycle disposal used by host composition. */
+export interface ManagedOAuthService extends OAuthService {
+  /** Abort and drain all owned OAuth work. */
+  dispose(): Promise<void>
+}
+
+/** Host-owned construction service registered at the `dsh-oauth-runtime` Cordis key. */
+export interface OAuthRuntimeComposition {
+  /** Construct one managed service for the owning OAuth plugin fiber. */
+  createService(ctx: Context, config: { readonly refreshWindowMs: number }): ManagedOAuthService
 }
