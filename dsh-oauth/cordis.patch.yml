@@ -1,0 +1,4 @@
+- insert:
+    - id: dsh-oauth
+      name: '@dsh-plugins/dsh-oauth'
+      disabled: true

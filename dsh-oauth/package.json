@@ -1,31 +1,87 @@
 {
   "name": "@dsh-plugins/dsh-oauth",
-  "version": "0.0.0-spike.0",
-  "private": true,
+  "description": "OAuth account and credential lifecycle plugin for DeepSeek Harness",
+  "version": "0.1.0",
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mwbimh/dsh-plugin.git",
+    "directory": "dsh-oauth"
+  },
   "type": "module",
+  "main": "lib/index.js",
+  "types": "lib/types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/types/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./invariant": {
+      "types": "./lib/types/invariant.d.ts",
+      "default": "./lib/invariant.js"
+    },
+    "./types": {
+      "types": "./lib/types/public.d.ts",
+      "default": "./lib/types/public.js"
+    },
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/index.js",
+    "lib/invariant.js",
+    "lib/types/index.d.ts",
+    "lib/types/invariant.d.ts",
+    "lib/types/public.d.ts",
+    "lib/types/public.js",
+    "cordis.patch.yml",
+    "LICENSE",
+    "README.md",
+    "CHANGELOG.md",
+    "docs/0001-credential-bridge-spike.md",
+    "docs/security.md"
+  ],
+  "license": "MIT",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
   "scripts": {
-    "test": "vitest run",
-    "typecheck": "tsc --noEmit",
-    "build": "tsc",
-    "check": "npm run test && npm run typecheck && npm run build"
+    "test": "vitest run --root .. dsh-oauth/tests",
+    "test:coverage": "vitest run --root .. --coverage dsh-oauth/tests",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "lint": "oxlint --type-aware src tests",
+    "build": "tsc -p tsconfig.json && tsdown -c tsdown.config.ts",
+    "prepare": "pnpm run build",
+    "pack:check": "vitest run --root .. dsh-oauth/tests/pack-install.spec.ts",
+    "check": "pnpm run test && pnpm run typecheck && pnpm run lint && pnpm run build && pnpm run pack:check"
   },
   "engines": {
     "node": "^22.19.0 || >=24.0.0"
   },
   "dependencies": {
+    "@deepseek-ai/schemastery": "3.18.1"
+  },
+  "peerDependencies": {
     "@deepseek-ai/cordis": "4.0.1",
-    "@deepseek-ai/schemastery": "3.18.1",
+    "@deepseek-ai/dsh-commands": "0.1.0-rc.6",
     "@deepseek-ai/dsh-credentials": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-invariants": "0.1.0-rc.6",
     "@deepseek-ai/dsh-llm": "0.1.0-rc.6"
   },
   "devDependencies": {
+    "@deepseek-ai/cordis": "4.0.1",
     "@deepseek-ai/cordis-plugin-include": "1.0.6",
     "@deepseek-ai/cordis-plugin-loader": "1.0.2",
+    "@deepseek-ai/dsh-commands": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-credentials": "0.1.0-rc.6",
     "@deepseek-ai/dsh-credentials-local": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-invariants": "0.1.0-rc.6",
     "@deepseek-ai/dsh-launch-environment": "0.1.0-rc.6",
-    "@deepseek-ai/dsh-llm-pi-ai": "0.1.0-rc.6",
-    "@types/node": "^24.10.0",
-    "typescript": "^5.9.3",
-    "vitest": "^4.0.15"
+    "@deepseek-ai/dsh-llm": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-llm-pi-ai": "0.1.0-rc.6"
   }
 }
