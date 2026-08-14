@@ -1,0 +1,4 @@
+/.artifacts/
+/coverage/
+/lib/
+/node_modules/

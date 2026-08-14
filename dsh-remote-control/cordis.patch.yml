@@ -1,0 +1,9 @@
+- insert:
+    - id: dsh-remote-control.gateway
+      name: '@deepseek-ai/dsh-remote-control'
+      config:
+        enabled: false
+        lan: false
+        address: '127.0.0.1'
+        port: 0
+        managementPort: 0
