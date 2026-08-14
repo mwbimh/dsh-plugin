@@ -3,18 +3,27 @@ import {
   createMemoryTrustStore,
   createRemoteControlClient,
   generateDeviceIdentity,
+  HOST_SIGNATURE_HEADER,
+  PROTOCOL_VERSION,
+  signTranscript,
+  transcriptForChallengeResponse,
+  transcriptForInvitation,
   type PairedDevice,
   type PairingInvitation,
 } from '../src/index.ts'
 import { apply } from '../src/invariant.ts'
 
+const hostIdentity = generateDeviceIdentity()
 const invitation: PairingInvitation = {
+  version: PROTOCOL_VERSION,
   pairingId: 'pairing-id',
   code: 'pairing-code',
   expiresAt: Date.now() + 1_000,
-  hostPublicKey: 'host-public-key',
+  hostPublicKey: hostIdentity.publicKey,
   lanUrl: 'http://127.0.0.1:43721',
+  hostSignature: '',
 }
+invitation.hostSignature = signTranscript(hostIdentity.privateKey, transcriptForInvitation(invitation))
 
 describe('client branch coverage', () => {
   it('rejects a host identity mismatch before fetching', async () => {
@@ -30,30 +39,78 @@ describe('client branch coverage', () => {
     expect(request).not.toHaveBeenCalled()
   })
 
-  it('allows an unpinned host and sends the pairing request', async () => {
-    const request = vi.fn(async () => new Response('{}', {
-      status: 201,
-      headers: { 'content-type': 'application/json' },
-    }))
+  it.each([
+    [{ ...invitation, version: PROTOCOL_VERSION - 1 }],
+    [{ ...invitation, hostSignature: 'invalid' }],
+  ])('rejects an unauthenticated invitation before fetching %#', async (untrustedInvitation) => {
+    const request = vi.fn()
     const client = createRemoteControlClient({
       baseUrl: invitation.lanUrl,
       identity: generateDeviceIdentity(),
+      hostPublicKey: invitation.hostPublicKey,
       fetch: request as unknown as typeof fetch,
     })
 
-    await expect(client.pair(invitation, 'phone')).resolves.toBeUndefined()
-    expect(request).toHaveBeenCalledOnce()
-    client.dispose()
+    await expect(client.pair(untrustedInvitation, 'phone')).rejects.toThrow(/host authentication/)
+    expect(request).not.toHaveBeenCalled()
   })
 
-  it('uses the HTTP status fallback and combines caller abort signals', async () => {
-    const request = vi.fn(async () => new Response('{}', {
-      status: 418,
-      headers: { 'content-type': 'application/json' },
+  it.each([
+    [{ version: PROTOCOL_VERSION - 1, hostPublicKey: hostIdentity.publicKey }],
+    [{ version: PROTOCOL_VERSION, hostPublicKey: generateDeviceIdentity().publicKey }],
+  ])('rejects signed challenge fields which do not match the pinned protocol %#', async (fields) => {
+    const identity = generateDeviceIdentity()
+    const body = {
+      ...fields,
+      challengeId: 'challenge-id',
+      challenge: 'challenge',
+      expiresAt: Date.now() + 1_000,
+    }
+    const request = vi.fn(async () => new Response(JSON.stringify(body), {
+      status: 200,
+      headers: {
+        'content-type': 'application/json',
+        [HOST_SIGNATURE_HEADER]: signTranscript(hostIdentity.privateKey, transcriptForChallengeResponse(
+          hostIdentity.publicKey,
+          identity.deviceId,
+          200,
+          body,
+        )),
+      },
     }))
     const client = createRemoteControlClient({
       baseUrl: invitation.lanUrl,
-      identity: generateDeviceIdentity(),
+      identity,
+      hostPublicKey: hostIdentity.publicKey,
+      fetch: request as unknown as typeof fetch,
+    })
+
+    await expect(client.list()).rejects.toThrow(/host authentication/)
+    expect(request).toHaveBeenCalledOnce()
+  })
+
+  it('uses the HTTP status fallback and combines caller abort signals', async () => {
+    const identity = generateDeviceIdentity()
+    const body = {}
+    const request = vi.fn(async () => {
+      const status = 418
+      return new Response(JSON.stringify(body), {
+        status,
+        headers: {
+          'content-type': 'application/json',
+          [HOST_SIGNATURE_HEADER]: signTranscript(hostIdentity.privateKey, transcriptForChallengeResponse(
+            hostIdentity.publicKey,
+            identity.deviceId,
+            status,
+            body,
+          )),
+        },
+      })
+    })
+    const client = createRemoteControlClient({
+      baseUrl: invitation.lanUrl,
+      identity,
+      hostPublicKey: invitation.hostPublicKey,
       fetch: request as unknown as typeof fetch,
     })
     const caller = new AbortController()
@@ -66,6 +123,7 @@ describe('client branch coverage', () => {
     const client = createRemoteControlClient({
       baseUrl: invitation.lanUrl,
       identity: generateDeviceIdentity(),
+      hostPublicKey: invitation.hostPublicKey,
       fetch: vi.fn() as unknown as typeof fetch,
     })
 

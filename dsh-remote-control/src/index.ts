@@ -3,6 +3,7 @@ import { createRemoteControlServer, type RemoteControlServerOptions } from './se
 
 export * from './client.ts'
 export * from './identity.ts'
+export * from './protocol.ts'
 export * from './file-state.ts'
 export * from './server.ts'
 export * from './trust-store.ts'
@@ -41,6 +42,7 @@ export function apply(ctx: Context, config: Config = {}): void {
       async list({ signal }) {
         signal.throwIfAborted()
         const response = await apiProxy.sessions.list({ rpcId: crypto.randomUUID(), payload: {} })
+        signal.throwIfAborted()
         if (!response.result.ok) throw new Error('DSH session.list failed')
         const value = response.result.value as { items: Array<{
           sessionId: string
@@ -64,6 +66,7 @@ export function apply(ctx: Context, config: Config = {}): void {
       async history(request, { signal }) {
         signal.throwIfAborted()
         const response = await apiProxy.sessions.history({ rpcId: crypto.randomUUID(), payload: request })
+        signal.throwIfAborted()
         if (!response.result.ok) throw new Error('DSH session.history failed')
         const value = response.result.value as { events: Array<{ event: {
           seq: number

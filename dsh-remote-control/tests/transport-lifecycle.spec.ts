@@ -134,11 +134,29 @@ describe('secret redaction', () => {
       sessionId: 'session-a',
       prompt: paired.identity.privateKey,
     })).rejects.toThrow()
+    await expect(paired.client.invoke(paired.identity.privateKey, {})).rejects.toThrow()
+    await fetch(new URL('/dsh-remote-control/v1/challenge', fixture.invitation.lanUrl), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ deviceId: paired.identity.privateKey }),
+    })
+    const compactSecret = 'A'.repeat(43)
+    await fetch(new URL('/dsh-remote-control/v1/challenge', fixture.invitation.lanUrl), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ deviceId: compactSecret }),
+    })
+    await fetch(new URL('/dsh-remote-control/v1/invoke', fixture.invitation.lanUrl), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ deviceId: compactSecret }),
+    })
 
     expect(auditEvents.length).toBeGreaterThan(0)
     const serialized = JSON.stringify(auditEvents)
     expect(serialized).not.toContain(fixture.invitation.code)
     expect(serialized).not.toContain(paired.identity.privateKey)
+    expect(serialized).not.toContain(compactSecret)
     expect(serialized).not.toContain('PRIVATE KEY')
   })
 })

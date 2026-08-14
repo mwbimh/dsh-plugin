@@ -21,11 +21,13 @@ export interface PairedDevice {
 
 /** One locally opened, short-lived pairing invitation. */
 export interface PairingInvitation {
+  version: number
   pairingId: string
   code: string
   expiresAt: number
   hostPublicKey: string
   lanUrl: string
+  hostSignature: string
 }
 
 /** Minimal session-list row exposed by the read-only listener. */

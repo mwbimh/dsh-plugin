@@ -3,9 +3,11 @@ import {
   createMemoryTrustStore,
   createRemoteControlClient,
   createRemoteControlServer,
+  derivePairingChallenge,
   generateDeviceIdentity,
   signTranscript,
   transcriptForInvoke,
+  transcriptForPairingRequest,
   type AuditEvent,
   type PairingInvitation,
   type SessionsReadAdapter,
@@ -27,12 +29,21 @@ async function postJson(baseUrl: string, path: string, body: unknown): Promise<R
 }
 
 function pairBody(invitation: PairingInvitation, identity = generateDeviceIdentity()) {
+  const friendlyName = 'coverage device'
+  const pairingChallenge = derivePairingChallenge(invitation, identity.deviceId, identity.publicKey)
   return {
     pairingId: invitation.pairingId,
-    code: invitation.code,
+    pairingChallenge,
     publicKey: identity.publicKey,
     deviceId: identity.deviceId,
-    friendlyName: 'coverage device',
+    friendlyName,
+    signature: signTranscript(identity.privateKey, transcriptForPairingRequest(
+      invitation,
+      pairingChallenge,
+      identity.deviceId,
+      identity.publicKey,
+      friendlyName,
+    )),
   }
 }
 
@@ -71,7 +82,7 @@ describe('pairing rejection coverage', () => {
     const body = pairBody(fixture.invitation)
     const wrong = await postJson(fixture.invitation.lanUrl, '/dsh-remote-control/v1/pair', {
       ...body,
-      code: 'x'.repeat(fixture.invitation.code.length),
+      pairingChallenge: `x${body.pairingChallenge.slice(1)}`,
     })
     const exhausted = await postJson(fixture.invitation.lanUrl, '/dsh-remote-control/v1/pair', body)
 
@@ -234,6 +245,7 @@ describe('history validation and adapter failure coverage', () => {
     const signature = signTranscript(paired.identity.privateKey, transcriptForInvoke(
       challenge.challengeId,
       challenge.challenge,
+      fixture.invitation.hostPublicKey,
       paired.identity.deviceId,
       operation,
       payload,

@@ -115,9 +115,11 @@ function createServer(options: {
   adapter?: SessionsReadAdapter
   devices?: PairedDevice[]
   listFailure?: unknown
+  getFailure?: unknown
 } = {}) {
   const trustStore = createMemoryTrustStore(options.devices)
   if ('listFailure' in options) trustStore.list = () => { throw options.listFailure }
+  if ('getFailure' in options) trustStore.get = () => { throw options.getFailure }
   return createRemoteControlServer({
     enabled: true,
     listen: { lan: true, address: '127.0.0.1', port: 0 },
@@ -140,11 +142,46 @@ describe('mocked Node HTTP defensive branches', () => {
     httpMocks.addresses.push(null)
     await expect(createServer().start()).rejects.toThrow(/TCP address unavailable/)
 
-    httpMocks.addresses.push(
-      { address: '127.0.0.1', family: 'IPv4', port: 43721 },
-      'named-pipe',
-    )
+    httpMocks.addresses.push('named-pipe')
     await expect(createServer({ management: true }).start()).rejects.toThrow(/management address unavailable/)
+
+    httpMocks.addresses.push(
+      { address: '127.0.0.1', family: 'IPv4', port: 43722 },
+      { address: '::', family: 'IPv6', port: 43721 },
+    )
+    const rolledBack = createServer({ management: true })
+    await expect(rolledBack.start()).rejects.toThrow(/explicit interface/)
+    expect(rolledBack.addresses).toEqual({ lan: null, management: null })
+
+    httpMocks.addresses.push({ address: '10.0.0.2', family: 'IPv4', port: 43722 })
+    await expect(createServer({ management: true }).start()).rejects.toThrow(/management.*loopback/)
+  })
+
+  it('turns a LAN route failure before headers into an internal response', async () => {
+    const server = createServer({ getFailure: new Error('get exploded') })
+    await server.start()
+    const response = new FakeResponse()
+
+    httpMocks.handlers[0]?.(
+      new FakeRequest('POST', '/dsh-remote-control/v1/challenge', [JSON.stringify({ deviceId: 'device' })]),
+      response,
+    )
+    await waitUntil(() => response.writableEnded)
+
+    expect(response.status).toBe(500)
+    expect(JSON.parse(response.body)).toEqual({ error: 'internal' })
+  })
+
+  it.each(['destroyed', 'writableEnded'] as const)('does not write a plain response which is already %s', async (state) => {
+    const server = createServer()
+    await server.start()
+    const response = new FakeResponse()
+    response[state] = true
+
+    httpMocks.handlers[0]?.(new FakeRequest('GET', '/missing'), response)
+    await Promise.resolve()
+
+    expect(response.headersSent).toBe(false)
   })
 
   it.each([
@@ -155,7 +192,7 @@ describe('mocked Node HTTP defensive branches', () => {
     await server.start()
     const response = new FakeResponse()
 
-    httpMocks.handlers[1]?.(
+    httpMocks.handlers[0]?.(
       new FakeRequest('GET', '/dsh-remote-control/v1/management/devices', [], remoteAddress),
       response,
     )
@@ -173,7 +210,7 @@ describe('mocked Node HTTP defensive branches', () => {
     await server.start()
     const response = new FakeResponse(true)
 
-    httpMocks.handlers[1]?.(
+    httpMocks.handlers[0]?.(
       new FakeRequest('GET', '/dsh-remote-control/v1/management/devices'),
       response,
     )
@@ -229,12 +266,13 @@ describe('mocked Node HTTP defensive branches', () => {
       [JSON.stringify({ deviceId: identity.deviceId })],
     ), challengeResponse)
     await waitUntil(() => challengeResponse.writableEnded)
-    const challenge = JSON.parse(challengeResponse.body) as { challengeId: string; challenge: string }
+    const challenge = JSON.parse(challengeResponse.body) as { challengeId: string; challenge: string; hostPublicKey: string }
     const payload = {}
     const operation = 'session.list'
     const signature = signTranscript(identity.privateKey, transcriptForInvoke(
       challenge.challengeId,
       challenge.challenge,
+      challenge.hostPublicKey,
       identity.deviceId,
       operation,
       payload,
@@ -254,5 +292,61 @@ describe('mocked Node HTTP defensive branches', () => {
     await waitUntil(() => observedSignal?.aborted === true)
 
     expect(observedSignal?.reason).toEqual(new Error('request aborted'))
+  })
+
+  it.each([
+    [new Error('adapter exploded'), true],
+    ['adapter exploded', false],
+  ])('destroys a started invoke response after adapter failure %#', async (failure, isError) => {
+    const identity = generateDeviceIdentity()
+    const device: PairedDevice = {
+      deviceId: identity.deviceId,
+      publicKey: identity.publicKey,
+      friendlyName: 'failing client',
+      capabilities: ['sessions.read'],
+      pairedAt: '2026-08-14T00:00:00.000Z',
+      lastSeenAt: null,
+      revokedAt: null,
+    }
+    const server = createServer({
+      devices: [device],
+      adapter: {
+        list: vi.fn(async () => { throw failure }),
+        history: vi.fn(),
+      },
+    })
+    await server.start()
+    const handler = httpMocks.handlers[0]!
+    const challengeResponse = new FakeResponse()
+    handler(new FakeRequest(
+      'POST',
+      '/dsh-remote-control/v1/challenge',
+      [JSON.stringify({ deviceId: identity.deviceId })],
+    ), challengeResponse)
+    await waitUntil(() => challengeResponse.writableEnded)
+    const challenge = JSON.parse(challengeResponse.body) as {
+      challengeId: string; challenge: string; hostPublicKey: string
+    }
+    const payload = {}
+    const operation = 'session.list'
+    const signature = signTranscript(identity.privateKey, transcriptForInvoke(
+      challenge.challengeId,
+      challenge.challenge,
+      challenge.hostPublicKey,
+      identity.deviceId,
+      operation,
+      payload,
+    ))
+    const response = new FakeResponse(true)
+    handler(new FakeRequest('POST', '/dsh-remote-control/v1/invoke', [JSON.stringify({
+      deviceId: identity.deviceId,
+      challengeId: challenge.challengeId,
+      operation,
+      payload,
+      signature,
+    })]), response)
+    await waitUntil(() => response.destroyed)
+
+    expect(response.destroyedWith instanceof Error).toBe(isError)
   })
 })

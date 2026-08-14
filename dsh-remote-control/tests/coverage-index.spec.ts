@@ -155,4 +155,29 @@ describe('plugin composition coverage', () => {
     aborted.abort(new Error('already aborted'))
     await expect(options.adapter.list({ signal: aborted.signal })).rejects.toThrow(/already aborted/)
   })
+
+  it('drops apiProxy results which resolve after list or history is aborted', async () => {
+    let resolveList!: (value: { result: { ok: true; value: { items: [] } } }) => void
+    let resolveHistory!: (value: { result: { ok: true; value: { events: []; hasMore: false } } }) => void
+    const apiProxy = {
+      sessions: {
+        list: vi.fn(async () => new Promise(resolve => { resolveList = resolve })),
+        history: vi.fn(async () => new Promise(resolve => { resolveHistory = resolve })),
+      },
+    }
+    apply(createContext(apiProxy, []), { enabled: true, lan: true, statePath: 'state.json' })
+    const options = mocks.createServer.mock.calls.at(-1)?.[0] as RemoteControlServerOptions
+
+    const listAbort = new AbortController()
+    const list = options.adapter.list({ signal: listAbort.signal })
+    listAbort.abort(new Error('list revoked'))
+    resolveList({ result: { ok: true, value: { items: [] } } })
+    await expect(list).rejects.toThrow(/list revoked/)
+
+    const historyAbort = new AbortController()
+    const history = options.adapter.history({ sessionId: 'x' }, { signal: historyAbort.signal })
+    historyAbort.abort(new Error('history revoked'))
+    resolveHistory({ result: { ok: true, value: { events: [], hasMore: false } } })
+    await expect(history).rejects.toThrow(/history revoked/)
+  })
 })

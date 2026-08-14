@@ -39,25 +39,20 @@
     "publint": "publint",
     "typecheck": "tsc --noEmit",
     "lint": "tsc --noEmit --noUnusedLocals --noUnusedParameters",
-    "test": "vitest run",
-    "test:coverage": "vitest run --coverage",
-    "test:watch": "vitest",
+    "test": "pnpm --dir .. exec vitest run dsh-remote-control/tests",
+    "test:coverage": "pnpm --dir .. exec vitest run --coverage dsh-remote-control/tests",
+    "test:watch": "pnpm --dir .. exec vitest dsh-remote-control/tests",
     "check": "pnpm run lint && pnpm run typecheck && pnpm run test && pnpm run build",
     "pack:check": "pnpm run check && pnpm run publint && pnpm pack --pack-destination .artifacts",
-    "install:smoke": "pnpm run pack:check && dsh plugin add .artifacts/deepseek-ai-dsh-remote-control-0.1.0.tgz"
+    "install:smoke": "pnpm run pack:check && node scripts/install-smoke.mjs"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "4.0.1"
   },
   "devDependencies": {
-    "@types/node": "22.20.0",
     "@deepseek-ai/cordis": "4.0.1",
     "@deepseek-ai/cordis-plugin-include": "1.0.6",
     "@deepseek-ai/cordis-plugin-loader": "1.0.2",
-    "@vitest/coverage-v8": "4.1.8",
-    "publint": "0.3.21",
-    "tsdown": "0.22.2",
-    "typescript": "6.0.3",
-    "vitest": "4.1.8"
+    "publint": "0.3.21"
   }
 }
