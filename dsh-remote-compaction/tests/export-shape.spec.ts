@@ -1,3 +1,4 @@
+import { readFile } from 'node:fs/promises'
 import { describe, expect, it } from 'vitest'
 import * as plugin from '../src/index.ts'
 import * as invariant from '../src/invariant.ts'
@@ -15,5 +16,22 @@ describe('published plugin shapes', () => {
     expect(invariant.name).toBe('dsh-remote-compaction-invariant')
     expect(invariant.inject).toEqual(['invariants'])
     expect(typeof invariant.apply).toBe('function')
+  })
+
+  it('is publication-blocked until exact rc.5 artifacts can verify the protected hook', async () => {
+    const packageJson = JSON.parse(await readFile(
+      new URL('../package.json', import.meta.url),
+      'utf8',
+    )) as {
+      private?: boolean
+      publishConfig?: unknown
+      scripts?: Record<string, string>
+    }
+    expect(packageJson.private).toBe(true)
+    expect(packageJson.publishConfig).toBeUndefined()
+    expect(packageJson.scripts?.prepare).toBe('tsc --build --force && tsdown')
+    expect(packageJson.scripts?.prepack).toBe('tsc --build --force && tsdown')
+    expect(packageJson.scripts?.['pack:check'])
+      .toBe('npm run build && node scripts/pack-package.mjs && node scripts/pack-smoke.mjs')
   })
 })

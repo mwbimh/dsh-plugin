@@ -1,7 +1,7 @@
-import { CapabilityCache, type CapabilityStatus } from './capability-cache.ts'
-import { RemoteCompactionError } from './errors.ts'
-import { resolveRemoteTarget } from './policy.ts'
-import type { OpenAICompactRequest, OpenAICompactResult, OpenAIInputItem } from './transport.ts'
+import { CapabilityCache, type CapabilityStatus } from './capability-cache.js'
+import { RemoteCompactionError } from './errors.js'
+import { resolveRemoteTarget } from './policy.js'
+import type { OpenAICompactRequest, OpenAICompactResult, OpenAIInputItem } from './transport.js'
 
 /** Dependencies for one lifecycle-owned remote coordinator. */
 export interface RemoteCompactionCoordinatorOptions {

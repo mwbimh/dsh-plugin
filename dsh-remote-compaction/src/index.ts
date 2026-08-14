@@ -11,14 +11,14 @@ import { credentialRef } from '@deepseek-ai/dsh-credentials'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { ContentBlock, Message, TokenUsage, ToolSchema } from '@deepseek-ai/dsh-llm'
 import z from '@deepseek-ai/schemastery'
-import { RemoteCompactionCoordinator } from './coordinator.ts'
-import { RemoteCompactionError } from './errors.ts'
+import { RemoteCompactionCoordinator } from './coordinator.js'
+import { RemoteCompactionError } from './errors.js'
 import {
   decideRemoteOutcome,
   resolveConversationTarget,
   type RemoteCompactionMode,
-} from './policy.ts'
-import { OpenAICompactTransport, serializeCompactionInput } from './transport.ts'
+} from './policy.js'
+import { OpenAICompactTransport, serializeCompactionInput } from './transport.js'
 
 /** Configuration layered on the exact Basic engine version. */
 export interface Config extends BasicCompactionConfig {
@@ -40,7 +40,11 @@ interface SummarizationInput {
   readonly messages: readonly Message[]
 }
 
-type SummaryResult = {
+/**
+ * Minimal rc.5 protected-hook boundary. Basic does not publicly export this
+ * result type, which is one reason this package remains private.
+ */
+type SummaryResultBoundary = {
   summary: ContentBlock[]
   provider: string
   model: string
@@ -53,7 +57,7 @@ type SummaryResult = {
 
 const modeSchema = z.union([z.const('auto'), z.const('remote-only'), z.const('disabled')])
 const remoteFields = z.object({
-  mode: modeSchema.default('auto'),
+  mode: modeSchema.default('disabled'),
   provider: z.string().default('openai'),
   model: z.string().default(''),
   baseURL: z.string().default('https://api.openai.com/v1'),
@@ -156,7 +160,7 @@ export class RemoteCompactionEngine extends BasicCompactionEngine {
     input: SummarizationInput,
     agent: Agent,
     signal?: AbortSignal,
-  ): Promise<SummaryResult> {
+  ): Promise<SummaryResultBoundary> {
     if (this.remoteConfig.mode === 'disabled') return super.summarize(input, agent, signal)
     try {
       const latest = agent.session.requestHeader()?.config
@@ -186,7 +190,7 @@ export class RemoteCompactionEngine extends BasicCompactionEngine {
   }
 }
 
-export { RemoteCompactionError } from './errors.ts'
-export type { RemoteCompactionErrorCode } from './errors.ts'
-export { OpenAICompactTransport, normalizeCompactResponse, serializeCompactionInput } from './transport.ts'
+export { RemoteCompactionError } from './errors.js'
+export type { RemoteCompactionErrorCode } from './errors.js'
+export { OpenAICompactTransport, normalizeCompactResponse, serializeCompactionInput } from './transport.js'
 export default RemoteCompactionEngine

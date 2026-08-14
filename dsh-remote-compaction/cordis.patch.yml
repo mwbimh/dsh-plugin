@@ -1,11 +1,10 @@
-- id: compaction-basic
-  name: '@deepseek-ai/dsh-compaction-basic'
-  disabled: true
-
 - insert:
+    - id: dsh-remote-compaction-invariant
+      name: dsh-remote-compaction/invariant
     - id: dsh-remote-compaction
       name: dsh-remote-compaction
+      disabled: true
       config:
-        mode: auto
+        mode: disabled
         provider: openai
         credentialRef: OPENAI_API_KEY

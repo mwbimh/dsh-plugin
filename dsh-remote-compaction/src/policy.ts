@@ -1,4 +1,4 @@
-import { RemoteCompactionError } from './errors.ts'
+import { RemoteCompactionError } from './errors.js'
 
 /** Configured target fields required by the direct OpenAI transport. */
 export interface RemoteTargetConfig {
@@ -47,8 +47,8 @@ export function resolveRemoteTarget(config: RemoteTargetConfig): ResolvedRemoteT
   let parsed: URL
   try {
     parsed = new URL(config.baseURL)
-  } catch (cause: unknown) {
-    throw new RemoteCompactionError('invalid-request', 'remote compaction baseURL is invalid', { cause })
+  } catch {
+    throw new RemoteCompactionError('invalid-request', 'remote compaction baseURL is invalid')
   }
   if (parsed.protocol !== 'https:' && parsed.hostname !== '127.0.0.1' && parsed.hostname !== 'localhost') {
     throw new RemoteCompactionError('invalid-request', 'remote compaction baseURL must use HTTPS')

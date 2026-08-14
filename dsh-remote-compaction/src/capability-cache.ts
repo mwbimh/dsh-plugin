@@ -1,4 +1,4 @@
-import { RemoteCompactionError } from './errors.ts'
+import { RemoteCompactionError } from './errors.js'
 
 /** Cached capability conclusion for one provider/model/endpoint target. */
 export type CapabilityStatus =
@@ -28,6 +28,7 @@ export class CapabilityCache {
   private readonly entries = new Map<string, CapabilityEntry>()
   private readonly pending = new Map<string, Promise<void>>()
   private readonly now: () => number
+  private generation = 0
 
   constructor(private readonly options: CapabilityCacheOptions) {
     this.now = options.now ?? Date.now
@@ -44,6 +45,7 @@ export class CapabilityCache {
 
   /** Clear all conclusions and single-flight references during disposal. */
   clear(): void {
+    this.generation += 1
     this.entries.clear()
     this.pending.clear()
   }
@@ -71,7 +73,7 @@ export class CapabilityCache {
     const current = new Promise<void>(resolve => { release = resolve })
     this.pending.set(target, current)
     try {
-      return await this.runUnknown(target, operation)
+      return await this.runUnknown(target, operation, this.generation)
     } finally {
       release()
       if (this.pending.get(target) === current) this.pending.delete(target)
@@ -92,21 +94,29 @@ export class CapabilityCache {
     })
   }
 
-  private async runUnknown<T>(target: string, operation: () => Promise<T>): Promise<T> {
+  private async runUnknown<T>(
+    target: string,
+    operation: () => Promise<T>,
+    generation: number,
+  ): Promise<T> {
     try {
       const result = await operation()
-      this.entries.set(target, {
-        status: 'supported',
-        expiresAt: this.now() + this.options.supportedTtlMs,
-      })
+      if (generation === this.generation) {
+        this.entries.set(target, {
+          status: 'supported',
+          expiresAt: this.now() + this.options.supportedTtlMs,
+        })
+      }
       return result
     } catch (error: unknown) {
       if (error instanceof RemoteCompactionError
         && (error.code === 'unsupported' || error.code === 'temporarily-unavailable')) {
-        this.entries.set(target, {
-          status: error.code,
-          expiresAt: this.now() + this.options.unavailableTtlMs,
-        })
+        if (generation === this.generation) {
+          this.entries.set(target, {
+            status: error.code,
+            expiresAt: this.now() + this.options.unavailableTtlMs,
+          })
+        }
       }
       throw error
     }

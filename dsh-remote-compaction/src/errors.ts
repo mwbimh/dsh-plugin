@@ -27,8 +27,7 @@ export class RemoteCompactionError extends Error {
   constructor(
     readonly code: RemoteCompactionErrorCode,
     message: string,
-    options?: ErrorOptions,
   ) {
-    super(message, options)
+    super(message)
   }
 }

@@ -55,6 +55,8 @@ describe('OpenAI compact transport', () => {
       { id: 'id', object: 'response.compaction', output: {} },
       { id: 'id', object: 'response.compaction', output: [] },
       { id: 'id', object: 'response.compaction', output: [null] },
+      { id: 'id', object: 'response.compaction', output: [{}] },
+      { id: 'id', object: 'response.compaction', output: [{ type: '' }] },
     ]
     for (const value of malformed) {
       expect(() => normalizeCompactResponse(value))
@@ -72,7 +74,7 @@ describe('OpenAI compact transport', () => {
       { input_tokens: 1, output_tokens: -2 },
     ]) {
       expect(() => normalizeCompactResponse({
-        id: 'id', object: 'response.compaction', output: [{}], usage,
+        id: 'id', object: 'response.compaction', output: [{ type: 'compaction' }], usage,
       })).toThrowError(expect.objectContaining({ code: 'invalid-response' }))
     }
   })
@@ -165,6 +167,50 @@ describe('OpenAI compact transport', () => {
     })).rejects.toMatchObject({ code: 'response-too-large' })
   })
 
+  it('cancels a streamed response on overflow without masking the exact code', async () => {
+    const cancel = vi.fn(async () => { throw new Error('cancel detail must not escape') })
+    const reader = {
+      read: vi.fn()
+        .mockResolvedValueOnce({ done: false, value: new Uint8Array([1, 2]) }),
+      cancel,
+    }
+    const body = { getReader: () => reader } as unknown as ReadableStream<Uint8Array>
+    const transport = new OpenAICompactTransport({
+      baseURL: 'https://api.example/v1', timeoutMs: 100, maxRequestBytes: 100, maxResponseBytes: 1,
+      fetch: async () => ({ ok: true, headers: new Headers(), body }) as Response,
+    })
+
+    const overflow = await transport.compact({
+      apiKey: 'secret', model: 'model', input: [], signal: new AbortController().signal,
+    }).catch((error: unknown) => error)
+    expect(overflow).toMatchObject({ code: 'response-too-large' })
+    expect((overflow as Error).cause).toBeUndefined()
+    expect(cancel).toHaveBeenCalledOnce()
+  })
+
+  it('does not wait for streamed overflow cancellation to settle', async () => {
+    const cancel = vi.fn(() => new Promise<void>(() => {}))
+    const reader = {
+      read: vi.fn()
+        .mockResolvedValueOnce({ done: false, value: new Uint8Array([1, 2]) }),
+      cancel,
+    }
+    const body = { getReader: () => reader } as unknown as ReadableStream<Uint8Array>
+    const transport = new OpenAICompactTransport({
+      baseURL: 'https://api.example/v1', timeoutMs: 100, maxRequestBytes: 100, maxResponseBytes: 1,
+      fetch: async () => ({ ok: true, headers: new Headers(), body }) as Response,
+    })
+
+    const outcome = await Promise.race([
+      transport.compact({
+        apiKey: 'secret', model: 'model', input: [], signal: new AbortController().signal,
+      }).catch((error: unknown) => error),
+      new Promise(resolve => setTimeout(() => resolve('cancel-still-pending'), 25)),
+    ])
+    expect(outcome).toMatchObject({ code: 'response-too-large' })
+    expect(cancel).toHaveBeenCalledOnce()
+  })
+
   it('bounds the UTF-8 request before network I/O', async () => {
     const fetchMock = vi.fn<typeof fetch>()
     const transport = new OpenAICompactTransport({
@@ -182,17 +228,22 @@ describe('OpenAI compact transport', () => {
       baseURL: 'https://api.example/v1', timeoutMs: 100, maxRequestBytes: 100, maxResponseBytes: 100,
       fetch: async () => { throw new Error('secret network detail') },
     })
-    await expect(network.compact({
+    const networkError = await network.compact({
       apiKey: 'secret', model: 'model', input: [], signal: new AbortController().signal,
-    })).rejects.toMatchObject({ code: 'transport', message: 'remote compaction request failed' })
+    }).catch((error: unknown) => error)
+    expect(networkError).toMatchObject({ code: 'transport', message: 'remote compaction request failed' })
+    expect((networkError as Error).cause).toBeUndefined()
+    expect(String((networkError as Error).stack)).not.toContain('secret network detail')
 
     const invalidJson = new OpenAICompactTransport({
       baseURL: 'https://api.example/v1', timeoutMs: 100, maxRequestBytes: 100, maxResponseBytes: 100,
       fetch: async () => new Response('{'),
     })
-    await expect(invalidJson.compact({
+    const invalidJsonError = await invalidJson.compact({
       apiKey: 'secret', model: 'model', input: [], signal: new AbortController().signal,
-    })).rejects.toMatchObject({ code: 'invalid-response' })
+    }).catch((error: unknown) => error)
+    expect(invalidJsonError).toMatchObject({ code: 'invalid-response' })
+    expect((invalidJsonError as Error).cause).toBeUndefined()
 
     const emptyBody = new OpenAICompactTransport({
       baseURL: 'https://api.example/v1', timeoutMs: 100, maxRequestBytes: 100, maxResponseBytes: 100,
@@ -265,14 +316,17 @@ describe('OpenAI compact transport', () => {
         start(stream) { stream.error(new Error('body failed')) },
       })),
     })
-    await expect(failedBody.compact({
+    const bodyError = await failedBody.compact({
       apiKey: 'secret', model: 'model', input: [], signal: new AbortController().signal,
-    })).rejects.toMatchObject({ code: 'transport', message: 'remote compaction response failed' })
+    }).catch((error: unknown) => error)
+    expect(bodyError).toMatchObject({ code: 'transport', message: 'remote compaction response failed' })
+    expect((bodyError as Error).cause).toBeUndefined()
+    expect(String((bodyError as Error).stack)).not.toContain('body failed')
   })
 
   it('uses global fetch when no transport override is supplied', async () => {
     const fetchMock = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({
-      id: 'id', object: 'response.compaction', output: [{}],
+      id: 'id', object: 'response.compaction', output: [{ type: 'compaction' }],
     })))
     vi.stubGlobal('fetch', fetchMock)
     try {

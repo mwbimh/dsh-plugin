@@ -1,5 +1,7 @@
 - id: llm
   name: '@deepseek-ai/dsh-llm'
+- id: fixture-llm-adapter
+  name: fixture-llm-adapter
 - id: sessions
   name: '@deepseek-ai/dsh-session'
 - id: token-meter
@@ -8,8 +10,6 @@
   name: fixture-credentials
 - id: invariants
   name: '@deepseek-ai/dsh-invariants'
-- id: dsh-remote-compaction-invariant
-  name: dsh-remote-compaction/invariant
 - id: compaction-basic
   name: '@deepseek-ai/dsh-compaction-basic'
   config:

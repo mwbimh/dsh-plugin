@@ -1,4 +1,4 @@
-import { RemoteCompactionError } from './errors.ts'
+import { RemoteCompactionError } from './errors.js'
 
 /** Text-only message subset accepted without losing DSH content. */
 export interface SerializableMessage {
@@ -19,7 +19,7 @@ export interface OpenAIInputItem {
   readonly content: string
 }
 
-/** Validated canonical output from `POST /responses/compact`. */
+/** Envelope-validated opaque output from `POST /responses/compact`. */
 export interface OpenAICompactResult {
   readonly output: readonly Record<string, unknown>[]
   readonly usage?: { readonly inputTokens: number; readonly outputTokens: number }
@@ -54,14 +54,14 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
-/** Validate the documented response while retaining its complete output array. */
+/** Validate the response envelope and item discriminators while retaining opaque items. */
 export function normalizeCompactResponse(value: unknown): OpenAICompactResult {
   if (!isRecord(value)
     || typeof value.id !== 'string'
     || value.object !== 'response.compaction'
     || !Array.isArray(value.output)
     || value.output.length === 0
-    || !value.output.every(isRecord)) {
+    || !value.output.every(item => isRecord(item) && typeof item.type === 'string' && item.type.length > 0)) {
     throw new RemoteCompactionError('invalid-response', 'remote compaction returned an invalid response')
   }
   let usage: OpenAICompactResult['usage']
@@ -132,26 +132,26 @@ export class OpenAICompactTransport {
             signal,
           },
         )
-      } catch (cause: unknown) {
+      } catch {
         if (request.signal.aborted) throw request.signal.reason
         if (timeout.signal.aborted) throw timeoutReason
-        throw new RemoteCompactionError('transport', 'remote compaction request failed', { cause })
+        throw new RemoteCompactionError('transport', 'remote compaction request failed')
       }
       if (!response.ok) throw await this.httpError(response)
       let bytes: Uint8Array
       try {
         bytes = await this.readBounded(response)
-      } catch (cause: unknown) {
-        if (cause instanceof RemoteCompactionError) throw cause
+      } catch (error: unknown) {
+        if (error instanceof RemoteCompactionError) throw error
         if (request.signal.aborted) throw request.signal.reason
         if (timeout.signal.aborted) throw timeoutReason
-        throw new RemoteCompactionError('transport', 'remote compaction response failed', { cause })
+        throw new RemoteCompactionError('transport', 'remote compaction response failed')
       }
       let value: unknown
       try {
         value = JSON.parse(new TextDecoder().decode(bytes))
-      } catch (cause: unknown) {
-        throw new RemoteCompactionError('invalid-response', 'remote compaction returned invalid JSON', { cause })
+      } catch {
+        throw new RemoteCompactionError('invalid-response', 'remote compaction returned invalid JSON')
       }
       return normalizeCompactResponse(value)
     } finally {
@@ -173,7 +173,11 @@ export class OpenAICompactTransport {
       if (done) break
       total += value.byteLength
       if (total > this.options.maxResponseBytes) {
-        await reader.cancel()
+        try {
+          void reader.cancel().catch(() => {})
+        } catch {
+          // Cancellation is best-effort; preserve the stable overflow classification.
+        }
         throw new RemoteCompactionError('response-too-large', 'remote compaction response exceeded its byte limit')
       }
       chunks.push(value)
