@@ -1,0 +1,38 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "categories": {
+    "correctness": "error"
+  },
+  "options": {
+    "reportUnusedDisableDirectives": "error",
+    "typeAware": true
+  },
+  "env": {
+    "builtin": true
+  },
+  "ignorePatterns": [
+    "**/coverage/**",
+    "**/lib/**",
+    "**/node_modules/**"
+  ],
+  "overrides": [
+    {
+      "files": ["dsh-*/src/**/*.ts", "dsh-*/tests/**/*.ts"],
+      "rules": {
+        "no-var": "error",
+        "prefer-const": "error",
+        "no-unused-vars": "error",
+        "typescript/await-thenable": "error",
+        "typescript/no-explicit-any": "error",
+        "typescript/no-floating-promises": "error",
+        "typescript/no-misused-promises": "error",
+        "typescript/no-unsafe-argument": "error",
+        "typescript/no-unsafe-assignment": "error",
+        "typescript/no-unsafe-call": "error",
+        "typescript/no-unsafe-member-access": "error",
+        "typescript/no-unsafe-return": "error"
+      },
+      "plugins": ["typescript"]
+    }
+  ]
+}

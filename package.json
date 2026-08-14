@@ -1,0 +1,30 @@
+{
+  "name": "@dsh-plugins/root",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.7.0",
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
+  "scripts": {
+    "test": "vitest run --passWithNoTests",
+    "test:coverage": "vitest run --coverage --passWithNoTests",
+    "typecheck": "pnpm --recursive --if-present run typecheck",
+    "lint": "oxlint --type-aware .",
+    "build": "pnpm --recursive --if-present run build",
+    "pack:check": "pnpm --recursive --if-present run pack:check",
+    "changeset": "changeset",
+    "changeset:status": "changeset status"
+  },
+  "devDependencies": {
+    "@changesets/cli": "^2.29.7",
+    "@types/node": "^22.20.0",
+    "@vitest/coverage-v8": "^4.1.8",
+    "oxlint": "1.76.0",
+    "oxlint-tsgolint": "7.0.2001",
+    "tsdown": "^0.22.2",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.8"
+  }
+}
