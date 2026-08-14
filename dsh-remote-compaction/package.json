@@ -1,0 +1,87 @@
+{
+  "name": "dsh-remote-compaction",
+  "version": "0.1.0",
+  "description": "Fail-closed OpenAI compaction transport and capability scaffold for DeepSeek Harness",
+  "type": "module",
+  "main": "lib/index.js",
+  "types": "lib/types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/types/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./invariant": {
+      "types": "./lib/types/invariant.d.ts",
+      "default": "./lib/invariant.js"
+    },
+    "./transport": {
+      "types": "./lib/types/transport.d.ts",
+      "default": "./lib/transport.js"
+    },
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/*.js",
+    "lib/types/**/*.d.ts",
+    "cordis.patch.yml",
+    "README.md",
+    "CHANGELOG.md"
+  ],
+  "scripts": {
+    "test": "vitest run --root .. dsh-remote-compaction/tests",
+    "test:e2e": "vitest run --config vitest.e2e.config.ts",
+    "test:coverage": "vitest run --root .. --coverage dsh-remote-compaction/tests",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.test.json --noEmit",
+    "lint": "oxlint --type-aware --tsconfig tsconfig.json src && oxlint tests tsdown.config.ts vitest.e2e.config.ts",
+    "build": "tsc --build --force && tsdown",
+    "pack:check": "pnpm build && pnpm pack --pack-destination .pack"
+  },
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mwbimh/dsh-plugin.git",
+    "directory": "dsh-remote-compaction"
+  },
+  "license": "MIT",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "4.0.1",
+    "@deepseek-ai/dsh-agent": "0.1.0-rc.5",
+    "@deepseek-ai/dsh-compaction-basic": "0.1.0-rc.5",
+    "@deepseek-ai/dsh-credentials": "0.1.0-rc.5",
+    "@deepseek-ai/dsh-invariants": "0.1.0-rc.5",
+    "@deepseek-ai/dsh-llm": "0.1.0-rc.5"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh-invariants": {
+      "optional": true
+    }
+  },
+  "dependencies": {
+    "@deepseek-ai/schemastery": "3.18.1"
+  },
+  "devDependencies": {
+    "@types/js-yaml": "4.0.9",
+    "@deepseek-ai/cordis": "4.0.1",
+    "@deepseek-ai/cordis-plugin-include": "1.0.6",
+    "@deepseek-ai/cordis-plugin-loader": "1.0.2",
+    "@deepseek-ai/dsh-agent": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-compaction-basic": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-credentials": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-invariants": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-llm": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-session": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-token-meter": "0.1.0-rc.6",
+    "js-yaml": "4.1.0"
+  }
+}

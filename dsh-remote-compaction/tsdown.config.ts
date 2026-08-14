@@ -1,0 +1,40 @@
+import { defineConfig } from 'tsdown'
+
+export default defineConfig([
+  {
+    entry: ['lib/types/index.js'],
+    format: ['esm'],
+    platform: 'node',
+    target: 'es2024',
+    outDir: 'lib',
+    fixedExtension: false,
+    outputOptions: { codeSplitting: false },
+    clean: false,
+    dts: false,
+    deps: { neverBundle: [/^@deepseek-ai\//] },
+  },
+  {
+    entry: ['lib/types/invariant.js'],
+    format: ['esm'],
+    platform: 'node',
+    target: 'es2024',
+    outDir: 'lib',
+    fixedExtension: false,
+    outputOptions: { codeSplitting: false },
+    clean: false,
+    dts: false,
+    deps: { neverBundle: [/^@deepseek-ai\//] },
+  },
+  {
+    entry: ['lib/types/transport.js'],
+    format: ['esm'],
+    platform: 'node',
+    target: 'es2024',
+    outDir: 'lib',
+    fixedExtension: false,
+    outputOptions: { codeSplitting: false },
+    clean: false,
+    dts: false,
+    deps: { neverBundle: [/^@deepseek-ai\//] },
+  },
+])

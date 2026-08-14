@@ -11,7 +11,7 @@
     "test": "vitest run --passWithNoTests",
     "test:coverage": "vitest run --coverage --passWithNoTests",
     "typecheck": "pnpm --recursive --if-present run typecheck",
-    "lint": "oxlint --type-aware .",
+    "lint": "oxlint --type-aware vitest.config.ts && pnpm --recursive --if-present run lint",
     "build": "pnpm --recursive --if-present run build",
     "pack:check": "pnpm --recursive --if-present run pack:check",
     "changeset": "changeset",

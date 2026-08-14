@@ -1,5 +1,6 @@
 /requirements/
-/node_modules/
+**/node_modules/
+**/.pack/
 **/coverage/
 **/lib/
 *.tgz

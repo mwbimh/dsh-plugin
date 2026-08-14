@@ -1,0 +1,10 @@
+{
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    "noEmit": true,
+    "composite": false,
+    "incremental": false
+  },
+  "include": ["src/**/*.ts", "tests/**/*.ts", "tsdown.config.ts", "vitest.e2e.config.ts"]
+}
